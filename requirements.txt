@@ -1,0 +1,12 @@
+kafka-python
+psycopg2-binary
+pandas
+python-dotenv
+pytest
+pytest-cov
+pytest-mock
+pyspark==3.5.0
+
+apache-airflow
+dbt-core
+dbt-postgres

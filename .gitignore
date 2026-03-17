@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Environment variables
+.env
+
+# Logs
+*.log
+logs/
+
+# Data files
+data/
+*.parquet
+*.csv
+*.json
+
+# Spark
+spark-warehouse/
+
+# Airflow
+airflow/logs/
+airflow/airflow.db
+airflow/unittests.cfg
+
+# dbt
+target/
+dbt_packages/
+logs/
+
+# Great Expectations
+great_expectations/uncommitted/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Docker
+*.pid
+*.sock
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.coverage
+htmlcov/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# MinIO
+minio_data/
+
+# Superset
+superset_home/
+
+# Grafana
+grafana_data/
