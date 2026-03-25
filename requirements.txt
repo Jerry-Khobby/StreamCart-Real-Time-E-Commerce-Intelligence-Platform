@@ -1,17 +1,9 @@
-pyspark
-apache-airflow
 apache-airflow-providers-postgres
 apache-airflow-providers-apache-spark
 apache-airflow-providers-http
-apache-airflow-providers-docker
 psycopg2-binary
 boto3
 pandas
 numpy
 pyyaml
 requests
-fastapi
-dbt-core
-dbt-postgres
-great-expectations
-sqlalchemy

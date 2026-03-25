@@ -10,13 +10,13 @@ RUN apt-get update && apt-get install -y \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
-# Switch to airflow user BEFORE installing Python packages
+# Set workdir BEFORE switching user
+WORKDIR /opt/airflow
+ENV PYTHONPATH=/opt/airflow:$PYTHONPATH
+
+# Switch to airflow user for pip installs (required by this base image)
 USER airflow
 
 # Copy and install Python dependencies
-COPY requirements.txt .
+COPY --chown=airflow:root requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Set working directory and Python path
-WORKDIR /opt/airflow
-ENV PYTHONPATH=/opt/airflow:$PYTHONPATH

@@ -101,15 +101,18 @@ services:
   airflow-init:
     <<: *airflow-common
     container_name: streamcart-airflow-init
+    depends_on:
+      postgres:
+        condition: service_healthy
     command: >
       bash -c "
       airflow db upgrade &&
-      airflow users create
-      --username admin
-      --password admin
-      --firstname Admin
-      --lastname User
-      --role Admin
+      airflow users create \
+      --username admin \
+      --password admin \
+      --firstname Admin \
+      --lastname User \
+      --role Admin \
       --email admin@example.com || true
       "
     restart: "no"
@@ -152,6 +155,9 @@ services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.7.7
     container_name: streamcart-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
     ports:
       - "2181:2181"
     networks:
