@@ -191,6 +191,7 @@ services:
     healthcheck:
       test: ["CMD", "kafka-topics --bootstrap-server kafka:9092 --list"]
       interval: 10s
+      timeout: 10s
       retries: 10
     networks:
       - streamcart-net
@@ -202,11 +203,17 @@ services:
   spark-master:
     image: apache/spark:3.5.0-python3
     container_name: streamcart-spark-master
+    user: root
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
     environment:
-      SPARK_MODE: master
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: "7077"
+      SPARK_MASTER_WEBUI_PORT: "8080"
     ports:
       - "8081:8080"
       - "7077:7077"
+    volumes:
+      - ./consumer:/opt/spark-apps
     depends_on:
       - kafka
       - minio
@@ -217,9 +224,13 @@ services:
   spark-worker:
     image: apache/spark:3.5.0-python3
     container_name: streamcart-spark-worker
+    user: root
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     environment:
-      SPARK_MODE: worker
-      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_CORES: "2"
+      SPARK_WORKER_MEMORY: "2g"
+    volumes:
+      - ./consumer:/opt/spark-apps
     depends_on:
       - spark-master
     networks:
