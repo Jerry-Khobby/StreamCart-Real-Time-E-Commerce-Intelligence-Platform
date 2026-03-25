@@ -258,3 +258,4 @@ docker compose up -d
 **Week 3** — Real-time + Grafana
 **Week 4** — Superset + QA + Docs
 
+docker compose exec airflow-webserver bash

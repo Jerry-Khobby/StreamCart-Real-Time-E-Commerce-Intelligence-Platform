@@ -1,9 +1,7 @@
-apache-airflow-providers-postgres
-apache-airflow-providers-apache-spark
-apache-airflow-providers-http
-psycopg2-binary
 boto3
 pandas
 numpy
 pyyaml
+kafka-python 
+python-dotenv 
 requests

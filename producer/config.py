@@ -1,3 +1,6 @@
+import random
+import os
+
 REGION_WEIGHTS = {
     "US":     0.35,
     "EU":     0.25,
@@ -99,6 +102,7 @@ USER_IDS    = [f"USER-{i:07d}" for i in range(1, NUM_USERS + 1)]
 
 
 # Fraud windows – these users will exhibit fraud patterns during specific hours
+random.seed(42)
 FRAUD_USER_POOL = random.sample(USER_IDS, min(50, NUM_USERS))
 
 _SEARCH_TERMS = [
@@ -130,3 +134,13 @@ _HUMAN_UAS = [
     "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36",
     "Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15",
 ]
+
+
+
+LOG_DIR = os.getenv("LOG_DIR", "/opt/airflow/logs")
+LOG_FILE = os.getenv("LOG_FILE", "streamcart.log")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+
+KAFKA_BROKER: str = os.getenv("KAFKA_BROKER", "kafka:9092")
+KAFKA_TOPIC: str = os.getenv("KAFKA_TOPIC", "heartbeats")

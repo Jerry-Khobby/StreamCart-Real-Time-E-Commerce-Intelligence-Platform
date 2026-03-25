@@ -34,8 +34,14 @@ from producer.config import (REGION_WEIGHTS,REGIONS,CURRENCIES,
                              _SEARCH_TERMS,
                              _REFERRERS,
                              _BOT_UAS,
-                             _HUMAN_UAS,
-                             )
+                             _HUMAN_UAS)
+from kafka.errors import KafkaError,NoBrokersAvailable
+from producer.logging_config import setup_logging
+
+
+
+logger = setup_logging("data_generator") 
+
 
 # ---------------------------------------------------------------------------
 # Optional Kafka import – gracefully degrades to stdout if not available
@@ -46,12 +52,27 @@ try:
 except ImportError:
     KAFKA_AVAILABLE = False
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 
+
+# Configuration
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 USE_KAFKA       = os.getenv("USE_KAFKA", "false").lower() == "true"
+
+
+
+import signal
+
+shutdown_flag = False
+
+def handle_shutdown(signum, frame):
+    global shutdown_flag
+    logger.info(f"Received signal {signum}. Shutting down...")
+    shutdown_flag = True
+
+signal.signal(signal.SIGINT, handle_shutdown)
+signal.signal(signal.SIGTERM, handle_shutdown)
+
+
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -252,23 +273,15 @@ def generate_inventory_update(ts: Optional[datetime] = None) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
+
 # Private helpers
-# ---------------------------------------------------------------------------
-
-
-
 def _random_search_query() -> str:
     terms = random.sample(_SEARCH_TERMS, k=random.randint(1, 3))
     return " ".join(terms)
 
 
-
-
 def _random_referrer() -> str:
     return random.choice(_REFERRERS)
-
-
 
 
 def _bot_ua() -> str:
@@ -278,39 +291,59 @@ def _human_ua() -> str:
     return random.choice(_HUMAN_UAS)
 
 
-# ---------------------------------------------------------------------------
 # Kafka producer
-# ---------------------------------------------------------------------------
-
-def build_producer() -> Optional["KafkaProducer"]:
+def build_producer(retries: int = 5, delay: int = 5):
     if not KAFKA_AVAILABLE:
-        print("[WARN] kafka-python not installed. Falling back to stdout.")
+        logger.warning("kafka-python not installed. Falling back to stdout.")
         return None
+
     if not USE_KAFKA:
+        logger.info("USE_KAFKA is false. Using stdout.")
         return None
-    return KafkaProducer(
-        bootstrap_servers=KAFKA_BOOTSTRAP,
-        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-        acks="all",
-        retries=3,
-    )
+
+    for attempt in range(retries):
+        try:
+            producer = KafkaProducer(
+                bootstrap_servers=KAFKA_BOOTSTRAP,
+                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+                acks="all",
+                retries=3,
+            )
+            logger.info("Connected to Kafka")
+            return producer
+
+        except NoBrokersAvailable:
+            logger.warning(f"Kafka not available (attempt {attempt+1}/{retries})")
+            time.sleep(delay)
+
+    logger.error("Failed to connect to Kafka after retries")
+    return None
 
 
-def emit(producer: Optional["KafkaProducer"], topic: str, event: dict, verbose: bool = True):
-    if producer:
-        producer.send(topic, value=event)
-    elif verbose:
+def emit(producer, topic: str, event: dict, retries: int = 3):
+    if not producer:
         print(json.dumps(event))
+        return
+
+    for attempt in range(retries):
+        try:
+            future = producer.send(topic, value=event)
+            future.get(timeout=10)  # wait for confirmation
+            return
+
+        except KafkaError as e:
+            logger.warning(f"Send failed (attempt {attempt+1}): {e}")
+            time.sleep(2 ** attempt)  # exponential backoff
+
+    logger.error("Failed to send message after retries")
 
 
-# ---------------------------------------------------------------------------
+
 # Stream modes
-# ---------------------------------------------------------------------------
-
 def stream_transactions(producer, tx_per_second: float = 5.0):
     interval = 1.0 / tx_per_second
     print(f"[transactions] Streaming at ~{tx_per_second} tx/s → topic: transactions")
-    while True:
+    while not shutdown_flag:
         ts    = now_utc()
         hour  = ts.hour
         weight = hourly_tx_weight(hour)
@@ -341,9 +374,8 @@ def stream_inventory(producer, updates_per_minute: float = 10.0):
         time.sleep(interval)
 
 
-# ---------------------------------------------------------------------------
+
 # Backfill mode
-# ---------------------------------------------------------------------------
 def backfill(producer, days: int = 30, tx_per_day: int = 50_000):
     """
     Generate historical data for the past N days.
@@ -379,10 +411,8 @@ def backfill(producer, days: int = 30, tx_per_day: int = 50_000):
     print(f"[backfill] Done. Total events emitted: {total:,}")
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
+# Entry point
 def main():
     parser = argparse.ArgumentParser(description="StreamCart data generator")
     parser.add_argument(
@@ -445,13 +475,14 @@ def main():
 
     print("Generator running. Press Ctrl+C to stop.")
     try:
-        while True:
+        while not shutdown_flag:
             time.sleep(1)
-    except KeyboardInterrupt:
-        print("\nStopped.")
+    finally:
+        logger.info("Flushing producer...")
         if producer:
             producer.flush()
             producer.close()
+        logger.info("Shutdown complete.")
 
 
 if __name__ == "__main__":
