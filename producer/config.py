@@ -143,4 +143,4 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 
 KAFKA_BROKER: str = os.getenv("KAFKA_BROKER", "kafka:9092")
-KAFKA_TOPIC: str = os.getenv("KAFKA_TOPIC", "heartbeats")
+KAFKA_TOPIC: str = os.getenv("KAFKA_TOPIC", "streamcarts")

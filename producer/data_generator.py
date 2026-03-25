@@ -22,6 +22,9 @@ import os
 import random
 import time
 import uuid
+from pathlib import Path 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+dotenv_path = PROJECT_ROOT / ".env"
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from producer.config import (REGION_WEIGHTS,REGIONS,CURRENCIES,
@@ -37,7 +40,9 @@ from producer.config import (REGION_WEIGHTS,REGIONS,CURRENCIES,
                              _HUMAN_UAS)
 from kafka.errors import KafkaError,NoBrokersAvailable
 from producer.logging_config import setup_logging
+from dotenv import load_dotenv 
 
+load_dotenv(dotenv_path)
 
 
 logger = setup_logging("data_generator") 
@@ -57,6 +62,10 @@ except ImportError:
 # Configuration
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 USE_KAFKA       = os.getenv("USE_KAFKA", "false").lower() == "true"
+
+
+print(USE_KAFKA)
+print(KAFKA_BOOTSTRAP)
 
 
 
@@ -367,7 +376,7 @@ def stream_clickstream(producer, sessions_per_minute: float = 20.0):
 
 def stream_inventory(producer, updates_per_minute: float = 10.0):
     interval = 60.0 / updates_per_minute
-    print(f"[inventory] Streaming at ~{updates_per_minute} updates/min → topic: inventory_updates")
+    logger.info(f"[inventory] Streaming at ~{updates_per_minute} updates/min → topic: inventory_updates")
     while True:
         ev = generate_inventory_update()
         emit(producer, "inventory_updates", ev)
@@ -381,7 +390,7 @@ def backfill(producer, days: int = 30, tx_per_day: int = 50_000):
     Generate historical data for the past N days.
     Useful for populating Bronze layer from scratch.
     """
-    print(f"[backfill] Generating {tx_per_day:,} tx/day × {days} days = {tx_per_day * days:,} total events")
+    logger.info(f"[backfill] Generating {tx_per_day:,} tx/day × {days} days = {tx_per_day * days:,} total events")
     end   = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     start = end - timedelta(days=days)
     total = 0
@@ -405,10 +414,10 @@ def backfill(producer, days: int = 30, tx_per_day: int = 50_000):
             emit(producer, "inventory_updates", ev, verbose=False)
             total += 1
 
-        print(f"  ✓ {current_day.date()} — cumulative events: {total:,}")
+        logger.info(f"  ✓ {current_day.date()} — cumulative events: {total:,}")
         current_day += timedelta(days=1)
 
-    print(f"[backfill] Done. Total events emitted: {total:,}")
+    logger.info(f"[backfill] Done. Total events emitted: {total:,}")
 
 
 
@@ -430,14 +439,14 @@ def main():
 
     if args.mode == "sample":
         # Print a few sample events of each type and exit
-        print("=== Sample Transaction ===")
-        print(json.dumps(generate_transaction(), indent=2))
-        print("\n=== Sample Clickstream Session (first event) ===")
+        logger.info("=== Sample Transaction ===")
+        logger.info(json.dumps(generate_transaction(), indent=2))
+        logger.info("\n=== Sample Clickstream Session (first event) ===")
         session = generate_session()
-        print(json.dumps(session[0], indent=2))
-        print(f"  ... ({len(session)} events in session)")
-        print("\n=== Sample Inventory Update ===")
-        print(json.dumps(generate_inventory_update(), indent=2))
+        logger.info(json.dumps(session[0], indent=2))
+        logger.info(f"  ... ({len(session)} events in session)")
+        logger.info("\n=== Sample Inventory Update ===")
+        logger.info(json.dumps(generate_inventory_update(), indent=2))
         return
 
     if args.mode == "backfill":
@@ -473,7 +482,7 @@ def main():
     for t in threads:
         t.start()
 
-    print("Generator running. Press Ctrl+C to stop.")
+    logger.info("Generator running. Press Ctrl+C to stop.")
     try:
         while not shutdown_flag:
             time.sleep(1)
