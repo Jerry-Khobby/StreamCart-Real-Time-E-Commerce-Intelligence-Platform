@@ -5,3 +5,4 @@ pyyaml
 kafka-python 
 python-dotenv 
 requests
+great-expectations==0.18.19

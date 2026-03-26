@@ -2,8 +2,14 @@ x-spark-common: &spark-common
   image: apache/spark:3.5.0-python3
   user: root
   env_file: .env
+  environment:
+    PYTHONPATH: /opt/airflow
   volumes:
-    - ./consumer:/opt/spark-apps
+    - ./consumer:/opt/airflow/consumer
+    - ./producer:/opt/airflow/producer
+    - ./logs:/opt/airflow/logs
+    - ./data:/opt/airflow/data
+
   networks:
     - streamcart-net
   restart: unless-stopped
@@ -161,6 +167,9 @@ services:
     command: python /opt/airflow/producer/data_generator.py --mode all
     volumes:
       - ./producer:/opt/airflow/producer
+      - ./logs:/opt/airflow/logs
+      - ./data:/opt/airflow/data
+      - ./consumer:/opt/airflow/consumer
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -217,7 +226,7 @@ services:
         --conf spark.hadoop.fs.s3a.path.style.access=true
         --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
         --conf spark.sql.shuffle.partitions=4
-        /opt/spark-apps/spark_streaming.py
+        /opt/airflow/consumer/spark_streaming.py
     depends_on:
       spark-master:
         condition: service_healthy
@@ -227,6 +236,37 @@ services:
         condition: service_completed_successfully
     restart: on-failure
 
+  spark-silver-job:
+    <<: *spark-common
+    container_name: streamcart-spark-silver
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    command: >
+      /opt/spark/bin/spark-submit
+          --master spark://spark-master:7077
+          --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262
+          --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000
+          --conf spark.hadoop.fs.s3a.access.key=${MINIO_ROOT_USER}
+          --conf spark.hadoop.fs.s3a.secret.key=${MINIO_ROOT_PASSWORD}
+          --conf spark.hadoop.fs.s3a.path.style.access=true
+          --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
+          --conf spark.sql.shuffle.partitions=4
+          --conf spark.submit.pyFiles=/opt/airflow/producer,/opt/airflow/consumer,/opt/airflow/logs,/opt/airflow/data
+          --conf spark.driver.extraClassPath=/opt/airflow
+          --conf spark.executorEnv.PYTHONPATH=/opt/airflow
+        /opt/airflow/consumer/silver_processor.py
+    volumes:
+      - ./consumer:/opt/airflow/consumer # silver_processor.py lives here
+      - ./producer:/opt/airflow/producer # needed for logging_config import
+      - ./data:/opt/airflow/data
+      - ./logs:/opt/airflow/logs
+
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    restart: "no"
 volumes:
   postgres-data:
   minio-data:

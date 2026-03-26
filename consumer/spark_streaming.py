@@ -9,6 +9,12 @@ from pyspark.sql.functions import (
   dayofmonth
 ) 
 from pyspark.sql.types import StructType,StringType,DoubleType, IntegerType, BooleanType 
+import sys 
+sys.path.append("/opt/airflow")
+from producer.logging_config import setup_logging
+
+
+logger =setup_logging("spark_streaming")
 
 
 #Create a spark session 
