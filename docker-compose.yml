@@ -1,43 +1,20 @@
-x-airflow-common: &airflow-common
-  build:
-    context: .
-    dockerfile: Dockerfile
+x-spark-common: &spark-common
+  image: apache/spark:3.5.0-python3
+  user: root
   env_file: .env
-  environment:
-    AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
-    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
-    MINIO_ENDPOINT: minio:9000
-    MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-    MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    MINIO_BUCKET: ${MINIO_BUCKET}
-    POSTGRES_HOST: postgres
-    POSTGRES_PORT: "5432"
-    POSTGRES_USER: ${POSTGRES_USER}
-    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    USE_KAFKA: ${USE_KAFKA}
-    KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
-    KAFKA_TOPIC: ${KAFKA_TOPIC}
   volumes:
-    - ./batch/dags:/opt/airflow/dags
-    - ./batch/dbt:/opt/airflow/dbt
-    - ./configs:/opt/airflow/configs
-    - ./producer:/opt/airflow/producer
-    - ./consumer:/opt/airflow/consumer
-    - ./logs:/opt/airflow/logs
+    - ./consumer:/opt/spark-apps
   networks:
     - streamcart-net
   restart: unless-stopped
 
 services:
-  # -------------------------------
+  # ──────────────────────────────────────────────────────────────────────────
   # PostgreSQL
-  # -------------------------------
+  # ──────────────────────────────────────────────────────────────────────────
   postgres:
     image: postgres:15-alpine
-    container_name: stream-postgres
+    container_name: streamcart-postgres
     env_file: .env
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -52,13 +29,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
     networks:
       - streamcart-net
     restart: unless-stopped
 
-  # -------------------------------
+  # ──────────────────────────────────────────────────────────────────────────
   # MinIO
-  # -------------------------------
+  # ──────────────────────────────────────────────────────────────────────────
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1
     container_name: streamcart-minio
@@ -77,6 +55,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
     networks:
       - streamcart-net
     restart: unless-stopped
@@ -92,69 +71,15 @@ services:
       /bin/sh -c "
         mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
         mc mb --ignore-existing local/${MINIO_BUCKET};
-        mc anonymous set download local/${MINIO_BUCKET};
-        echo 'Bucket ready.';
+        echo 'MinIO ready.';
       "
     networks:
       - streamcart-net
-
-  # -------------------------------
-  # Airflow
-  # -------------------------------
-  airflow-init:
-    <<: *airflow-common
-    container_name: streamcart-airflow-init
-    depends_on:
-      postgres:
-        condition: service_healthy
-    command: >
-      bash -c "
-      airflow db upgrade &&
-      airflow users create \
-      --username admin \
-      --password admin \
-      --firstname Admin \
-      --lastname User \
-      --role Admin \
-      --email admin@example.com || true
-      "
     restart: "no"
 
-  airflow-webserver:
-    <<: *airflow-common
-    container_name: streamcart-airflow-webserver
-    command: airflow webserver
-    ports:
-      - "8080:8080"
-    depends_on:
-      airflow-init:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  airflow-scheduler:
-    <<: *airflow-common
-    container_name: streamcart-airflow-scheduler
-    command: airflow scheduler
-    depends_on:
-      airflow-init:
-        condition: service_completed_successfully
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "airflow jobs check --job-type SchedulerJob --hostname $(hostname)",
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  # -------------------------------
-  # Kafka & Zookeeper
-  # -------------------------------
+  # ──────────────────────────────────────────────────────────────────────────
+  # Zookeeper
+  # ──────────────────────────────────────────────────────────────────────────
   zookeeper:
     image: confluentinc/cp-zookeeper:7.7.7
     container_name: streamcart-zookeeper
@@ -164,14 +89,18 @@ services:
     ports:
       - "2181:2181"
     healthcheck:
-      test: ["CMD-SHELL", "echo ruok | nc localhost 2181"]
+      test: ["CMD-SHELL", "nc -z localhost 2181 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 20s
     networks:
       - streamcart-net
     restart: unless-stopped
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # Kafka
+  # ──────────────────────────────────────────────────────────────────────────
   kafka:
     image: confluentinc/cp-kafka:7.7.7
     container_name: streamcart-kafka
@@ -185,25 +114,66 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: "168"
     depends_on:
       zookeeper:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "kafka-topics --bootstrap-server kafka:9092 --list"]
-      interval: 10s
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:9092 --list"]
+      interval: 15s
       timeout: 10s
       retries: 10
+      start_period: 30s
     networks:
       - streamcart-net
     restart: unless-stopped
 
-  # -------------------------------
+  kafka-init:
+    image: confluentinc/cp-kafka:7.7.7
+    container_name: streamcart-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic transactions --partitions 5 --replication-factor 1;
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic clickstream --partitions 5 --replication-factor 1;
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic inventory_updates --partitions 5 --replication-factor 1;
+        echo 'Topics ready.';
+      "
+    networks:
+      - streamcart-net
+    restart: "no"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Data Generator
+  # ──────────────────────────────────────────────────────────────────────────
+  data-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: streamcart-data-generator
+    env_file: .env
+    environment:
+      USE_KAFKA: "true"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    command: python /opt/airflow/producer/data_generator.py --mode all
+    volumes:
+      - ./producer:/opt/airflow/producer
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    networks:
+      - streamcart-net
+    restart: unless-stopped
+
+  # ──────────────────────────────────────────────────────────────────────────
   # Spark
-  # -------------------------------
+  # ──────────────────────────────────────────────────────────────────────────
   spark-master:
-    image: apache/spark:3.5.0-python3
+    <<: *spark-common
     container_name: streamcart-spark-master
-    user: root
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
     environment:
       SPARK_MASTER_HOST: spark-master
@@ -212,72 +182,54 @@ services:
     ports:
       - "8081:8080"
       - "7077:7077"
-    volumes:
-      - ./consumer:/opt/spark-apps
-    depends_on:
-      - kafka
-      - minio
-    networks:
-      - streamcart-net
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   spark-worker:
-    image: apache/spark:3.5.0-python3
+    <<: *spark-common
     container_name: streamcart-spark-worker
-    user: root
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     environment:
       SPARK_WORKER_CORES: "2"
       SPARK_WORKER_MEMORY: "2g"
-    volumes:
-      - ./consumer:/opt/spark-apps
     depends_on:
-      - spark-master
-    networks:
-      - streamcart-net
-    restart: unless-stopped
+      spark-master:
+        condition: service_healthy
 
-  # -------------------------------
-  # Superset
-  # -------------------------------
-  superset:
-    image: apache/superset:latest
-    container_name: streamcart-superset
+  spark-bronze-job:
+    <<: *spark-common
+    container_name: streamcart-spark-bronze
     environment:
-      SUPERSET_ENV: development
-      SUPERSET_LOAD_EXAMPLES: "no"
-      SUPERSET_SECRET_KEY: "supersecret"
-    ports:
-      - "8088:8088"
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    command: >
+      /opt/spark/bin/spark-submit
+        --master spark://spark-master:7077
+        --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262
+        --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000
+        --conf spark.hadoop.fs.s3a.access.key=${MINIO_ROOT_USER}
+        --conf spark.hadoop.fs.s3a.secret.key=${MINIO_ROOT_PASSWORD}
+        --conf spark.hadoop.fs.s3a.path.style.access=true
+        --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
+        --conf spark.sql.shuffle.partitions=4
+        /opt/spark-apps/spark_streaming.py
     depends_on:
-      - postgres
-    volumes:
-      - superset-data:/app/superset_home
-    networks:
-      - streamcart-net
-    restart: unless-stopped
-
-  # -------------------------------
-  # Grafana
-  # -------------------------------
-  grafana:
-    image: grafana/grafana-oss:latest
-    container_name: streamcart-grafana
-    ports:
-      - "3000:3000"
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-    depends_on:
-      - postgres
-    networks:
-      - streamcart-net
-    restart: unless-stopped
+      spark-master:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    restart: on-failure
 
 volumes:
   postgres-data:
   minio-data:
-  superset-data:
 
 networks:
   streamcart-net:
