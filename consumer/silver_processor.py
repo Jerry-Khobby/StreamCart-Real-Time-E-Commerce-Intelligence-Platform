@@ -3,7 +3,7 @@ import json
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     col, to_timestamp, lit, row_number, max as spark_max, when,
-    year, month, dayofmonth
+    year, month, dayofmonth, abs 
 )
 from pyspark.sql.window import Window
 from typing import Tuple, Dict
@@ -27,8 +27,7 @@ def create_spark_session() -> SparkSession:
     return (
         SparkSession.builder
         .appName("StreamCart-Silver-Layer")
-        .master("local[*]")
-        .config("spark.sql.shuffle.partitions", "4")
+        .config("spark.sql.shuffle.partitions", "8")
         .config("spark.hadoop.fs.s3a.endpoint",        "http://minio:9000")
         .config("spark.hadoop.fs.s3a.access.key",      os.getenv("MINIO_ROOT_USER"))
         .config("spark.hadoop.fs.s3a.secret.key",      os.getenv("MINIO_ROOT_PASSWORD"))
@@ -93,7 +92,7 @@ def read_bronze_incremental(
     df = spark.read.parquet(path)
 
     df = df.withColumn("event_time", to_timestamp("timestamp"))
-    df = df.filter(col("event_time") > lit(watermark.isoformat()))
+    df = df.filter(col("event_time") > lit(watermark))
 
     count = df.count()
     logger.info(f"[{table}] New rows since watermark: {count:,}")
@@ -352,6 +351,7 @@ def main():
 
         # 2. Incremental read from Bronze
         bronze_df = read_bronze_incremental(spark, bucket, table, watermark)
+        logger.info(f"[{table}] Bronze COUNT: {bronze_df.count()}")
 
         if bronze_df.count() == 0:
             logger.info(f"[{table}] No new data since {watermark} — skipping")
@@ -364,6 +364,7 @@ def main():
             f"passed: {stats['passed']:,} | "
             f"rejected: {stats['rejected']:,}"
         )
+        logger.info(f"[{table}] Silver COUNT after processing: {silver_df.count()}")
 
         # 4. Run validation suite
         report = run_validation(silver_df, table)
@@ -373,17 +374,13 @@ def main():
         if report["passed"]:
             silver_df = add_partition_columns(silver_df)
             write_silver(silver_df, bucket, table)
-            LOCAL_DATA_DIR ="/opt/airflow/data"
-            os.makedirs(LOCAL_DATA_DIR, exist_ok=True)
-            local_csv_path = os.path.join(LOCAL_DATA_DIR, f"{table}_silver.csv")
-            silver_df.coalesce(1).write.mode("overwrite").option("header", "true").csv(local_csv_path)
-            logger.info(f"[{table}] Saved local CSV → {local_csv_path}")
+            logger.info(f"[{table}] Validation PASSED? {report['passed']}")
 
+        else:
+            logger.warning(f"[{table}] No CSV part file found in {tmp_path}")
             # 6. Advance watermark to max event_time in this batch
             new_watermark = get_max_event_time(silver_df)
             save_watermark(spark, bucket, table, new_watermark)
-        else:
-            logger.warning(f"[{table}] Validation FAILED — Silver not written, watermark not advanced")
 
     logger.info(f"\n{'='*55}")
     logger.info("SILVER PIPELINE COMPLETE")
