@@ -1,0 +1,54 @@
+# models/staging/sources.yml
+# Declares the Silver-layer tables that dbt reads from.
+# Airflow loads Silver Parquet data into these Postgres tables
+# before dbt runs.
+
+version: 2
+
+sources:
+  - name: silver
+    description: "Cleaned and validated data loaded from MinIO Silver zone into Postgres."
+    database: "{{ env_var('POSTGRES_DB') }}"
+    schema: silver
+
+    tables:
+      - name: transactions
+        description: "Deduplicated, validated transactions with USD-normalised amounts."
+        columns:
+          - name: transaction_id
+            tests: [unique, not_null]
+          - name: user_id
+            tests: [not_null]
+          - name: amount_usd
+            tests: [not_null]
+          - name: currency
+            tests:
+              - not_null
+              - accepted_values:
+                  values: ["USD", "EUR", "JPY", "NGN", "BRL"]
+          - name: order_status
+            tests:
+              - accepted_values:
+                  values: ["completed", "pending", "refunded"]
+          - name: event_time
+            tests: [not_null]
+
+      - name: clickstream
+        description: "Bot-filtered, session-stitched clickstream events."
+        columns:
+          - name: event_id
+            tests: [unique, not_null]
+          - name: user_id
+            tests: [not_null]
+          - name: session_id
+            tests: [not_null]
+
+      - name: inventory
+        description: "Validated inventory delta events from all warehouses."
+        columns:
+          - name: event_id
+            tests: [unique, not_null]
+          - name: product_id
+            tests: [not_null]
+          - name: quantity_delta
+            tests: [not_null]

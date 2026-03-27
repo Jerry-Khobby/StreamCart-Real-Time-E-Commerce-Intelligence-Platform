@@ -1,0 +1,174 @@
+# models/schema.yml
+# dbt tests for all Gold layer models.
+
+
+
+
+
+
+
+
+
+version: 2
+
+models:
+
+  # ── Dimensions ──────────────────────────────────────────────────────────
+  - name: dim_customers
+    description: "One row per customer with lifetime value and segmentation."
+    columns:
+      - name: customer_key
+        tests: [unique, not_null]
+      - name: user_id
+        tests: [unique, not_null]
+      - name: value_segment
+        tests:
+          - accepted_values:
+              values: ["VIP", "High Value", "Mid Tier", "Low Value"]
+      - name: recency_segment
+        tests:
+          - accepted_values:
+              values: ["Active", "At Risk", "Lapsing", "Churned"]
+      - name: lifetime_revenue_usd
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+
+  - name: dim_products
+    description: "One row per product with sales performance metrics."
+    columns:
+      - name: product_key
+        tests: [unique, not_null]
+      - name: product_id
+        tests: [unique, not_null]
+      - name: popularity_tier
+        tests:
+          - accepted_values:
+              values: ["Bestseller", "Popular", "Regular", "Niche"]
+
+  - name: dim_dates
+    description: "Date spine from 2023 to 2027."
+    columns:
+      - name: date_key
+        tests: [unique, not_null]
+      - name: date_id
+        tests: [unique, not_null]
+      - name: day_of_week
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "between 0 and 6"
+      - name: month_number
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "between 1 and 12"
+
+  - name: dim_regions
+    description: "Static region reference table."
+    columns:
+      - name: region_key
+        tests: [unique, not_null]
+      - name: region_code
+        tests:
+          - unique
+          - not_null
+          - accepted_values:
+              values: ["US", "EU", "Asia", "Africa", "LatAm"]
+
+  # ── Facts ────────────────────────────────────────────────────────────────
+  - name: fct_orders
+    description: "One row per order. Grain: transaction_id."
+    columns:
+      - name: surrogate_key
+        tests: [unique, not_null]
+      - name: transaction_id
+        tests: [unique, not_null]
+      - name: user_id
+        tests: [not_null]
+      - name: amount_usd
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 0"
+      - name: quantity
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "> 0"
+      - name: order_status
+        tests:
+          - accepted_values:
+              values: ["completed", "pending", "refunded"]
+
+  - name: fct_sessions
+    description: "One row per user session aggregated from clickstream."
+    columns:
+      - name: surrogate_key
+        tests: [unique, not_null]
+      - name: session_id
+        tests: [unique, not_null]
+      - name: session_duration_seconds
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+      - name: engagement_score
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "between 0 and 5"
+
+  - name: fct_inventory_snapshots
+    description: "Daily stock snapshot per product per warehouse."
+    columns:
+      - name: surrogate_key
+        tests: [unique, not_null]
+      - name: stock_health
+        tests:
+          - accepted_values:
+              values: ["Out of Stock", "Critical", "Low", "Healthy", "Overstocked"]
+
+  # ── Aggregates ───────────────────────────────────────────────────────────
+  - name: agg_daily_revenue
+    description: "Daily revenue summary per region."
+    columns:
+      - name: surrogate_key
+        tests: [unique, not_null]
+      - name: gross_revenue_usd
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+      - name: total_orders
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "> 0"
+
+  - name: agg_fraud_summary
+    description: "Daily fraud signal summary per region."
+    columns:
+      - name: surrogate_key
+        tests: [unique, not_null]
+      - name: fraud_rate_pct
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "between 0 and 100"
+
+  - name: agg_inventory_health
+    description: "Daily warehouse-level inventory health summary."
+    columns:
+      - name: surrogate_key
+        tests: [unique, not_null]
+      - name: inventory_risk_score
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "between 0 and 100"
+
+  - name: agg_funnel_conversion
+    description: "Daily funnel conversion rates per region."
+    columns:
+      - name: surrogate_key
+        tests: [unique, not_null]
+      - name: overall_conversion_rate_pct
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "between 0 and 100"
+      - name: cart_abandonment_rate_pct
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "between 0 and 100"

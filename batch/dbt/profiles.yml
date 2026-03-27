@@ -1,0 +1,33 @@
+# profiles.yml
+# Place this at /opt/airflow/dbt/profiles.yml inside the container
+# (the AIRFLOW volume mounts ./batch/dbt → /opt/airflow/dbt)
+#
+# dbt reads DBT_PROFILES_DIR env var to locate this file.
+# In Docker we set: DBT_PROFILES_DIR=/opt/airflow/dbt
+
+streamcart:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('POSTGRES_HOST', 'postgres') }}"
+      port: 5432
+      user: "{{ env_var('POSTGRES_USER') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD') }}"
+      dbname: "{{ env_var('POSTGRES_DB') }}"
+      schema: gold
+      threads: 4
+      keepalives_idle: 0
+      connect_timeout: 10
+
+    prod:
+      type: postgres
+      host: "{{ env_var('POSTGRES_HOST') }}"
+      port: 5432
+      user: "{{ env_var('POSTGRES_USER') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD') }}"
+      dbname: "{{ env_var('POSTGRES_DB') }}"
+      schema: gold
+      threads: 8
+      keepalives_idle: 0
+      connect_timeout: 10

@@ -4,6 +4,8 @@ x-spark-common: &spark-common
   env_file: .env
   environment:
     PYTHONPATH: /opt/airflow
+    DBT_PROFILES_DIR: /opt/airflow/dbt
+    DBT_TARGET: dev
   volumes:
     - ./consumer:/opt/airflow/consumer
     - ./producer:/opt/airflow/producer
