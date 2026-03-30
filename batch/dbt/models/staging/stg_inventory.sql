@@ -1,45 +1,39 @@
--- models / staging / stg_inventory.sql 
+-- models/staging/stg_inventory.sql
 
-WITH source AS (
-  SELECT
-    *
-  FROM
-    {{ source(
-      'silver',
-      'inventory'
-    ) }}
+
+
+
+
+
+
+with source as (
+    select * from {{ source('silver', 'inventory') }}
 ),
-renamed AS (
-  SELECT
-    event_id,
-    product_id,
-    warehouse_id,
-    region,
-    update_type,
-    quantity_delta,
-    event_time :: timestamptz AS occurred_at,
-    DATE_TRUNC(
-      'day',
-      event_time
-    ) :: DATE AS event_date,
-    EXTRACT(
-      YEAR
-      FROM
-        event_time
-    ) :: INT AS event_year,
-    EXTRACT(
-      MONTH
-      FROM
-        event_time
-    ) :: INT AS event_month,-- classify direction OF movement CASE
-      WHEN quantity_delta > 0 THEN 'inbound'
-      WHEN quantity_delta < 0 THEN 'outbound'
-    END AS movement_direction,
-    ABS(quantity_delta) AS quantity_abs
-  FROM
-    source
+
+renamed as (
+    select
+        event_id,
+        product_id,
+        warehouse_id,
+        region,
+        update_type,
+        quantity_delta,
+
+        event_time::timestamptz                 as occurred_at,
+        date_trunc('day', event_time)::date     as event_date,
+        extract(year  from event_time)::int     as event_year,
+        extract(month from event_time)::int     as event_month,
+
+        -- Classify direction of movement
+        case
+            when quantity_delta > 0 then 'inbound'
+            when quantity_delta < 0 then 'outbound'
+            else 'neutral'
+        end                                     as movement_direction,
+
+        abs(quantity_delta)                     as quantity_abs
+
+    from source
 )
-SELECT
-  *
-FROM
-  renamed
+
+select * from renamed

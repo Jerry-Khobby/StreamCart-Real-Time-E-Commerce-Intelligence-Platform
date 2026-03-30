@@ -1,18 +1,9 @@
 # models/schema.yml
 # dbt tests for all Gold layer models.
 
-
-
-
-
-
-
-
-
 version: 2
 
 models:
-
   # ── Dimensions ──────────────────────────────────────────────────────────
   - name: dim_customers
     description: "One row per customer with lifetime value and segmentation."
@@ -122,7 +113,8 @@ models:
       - name: stock_health
         tests:
           - accepted_values:
-              values: ["Out of Stock", "Critical", "Low", "Healthy", "Overstocked"]
+              values:
+                ["Out of Stock", "Critical", "Low", "Healthy", "Overstocked"]
 
   # ── Aggregates ───────────────────────────────────────────────────────────
   - name: agg_daily_revenue

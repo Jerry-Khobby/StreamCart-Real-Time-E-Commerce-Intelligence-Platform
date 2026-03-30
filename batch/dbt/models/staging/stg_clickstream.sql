@@ -10,6 +10,7 @@
 
 
 
+
 with source as (
     select * from {{ source('silver', 'clickstream') }}
 ),
