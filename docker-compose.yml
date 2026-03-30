@@ -7,6 +7,8 @@ x-spark-common: &spark-common
     DBT_PROFILES_DIR: /opt/airflow/dbt
     DBT_TARGET: dev
   volumes:
+    - ./batch/dags:/opt/airflow/dags
+    - ./batch/dbt:/opt/airflow/dbt
     - ./consumer:/opt/airflow/consumer
     - ./producer:/opt/airflow/producer
     - ./logs:/opt/airflow/logs
@@ -263,11 +265,38 @@ services:
       - ./producer:/opt/airflow/producer # needed for logging_config import
       - ./data:/opt/airflow/data
       - ./logs:/opt/airflow/logs
-
     depends_on:
       spark-master:
         condition: service_healthy
     restart: "no"
+
+  dbt-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: streamcart-dbt-runner
+    env_file: .env
+    environment:
+      DBT_PROFILES_DIR: /opt/airflow/dbt
+      DBT_TARGET: dev
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ./batch/dbt:/opt/airflow/dbt
+    working_dir: /opt/airflow/dbt
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - streamcart-net
+
+    profiles:
+      - tools
+    entrypoint: ["tail", "-f", "/dev/null"]
+
 volumes:
   postgres-data:
   minio-data:

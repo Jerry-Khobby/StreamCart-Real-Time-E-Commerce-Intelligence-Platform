@@ -6,3 +6,7 @@ kafka-python
 python-dotenv 
 requests
 great-expectations==0.18.19
+
+
+dbt-postgres
+dbt-core 
