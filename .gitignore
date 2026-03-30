@@ -71,3 +71,11 @@ superset_home/
 
 # Grafana
 grafana_data/
+
+#take out jars 
+
+
+jars/
+
+jars/
+*.jar

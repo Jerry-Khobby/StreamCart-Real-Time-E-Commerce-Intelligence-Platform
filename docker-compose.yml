@@ -266,6 +266,7 @@ services:
       - ./producer:/opt/airflow/producer # needed for logging_config import
       - ./data:/opt/airflow/data
       - ./logs:/opt/airflow/logs
+      - ./jars:/opt/airflow/jars
     depends_on:
       spark-master:
         condition: service_healthy

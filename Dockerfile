@@ -20,6 +20,7 @@ ENV PYTHONPATH=/opt/airflow:$PYTHONPATH
 # Switch to airflow user for pip installs (required by this base image)
 USER airflow
 
+COPY jars/postgresql-42.7.6.jar /opt/airflow/jars/
 # Copy and install Python dependencies
 COPY --chown=airflow:root requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

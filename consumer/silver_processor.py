@@ -28,12 +28,27 @@ def create_spark_session() -> SparkSession:
         SparkSession.builder
         .appName("StreamCart-Silver-Layer")
         .config("spark.sql.shuffle.partitions", "8")
-        .config("spark.hadoop.fs.s3a.endpoint",        "http://minio:9000")
-        .config("spark.hadoop.fs.s3a.access.key",      os.getenv("MINIO_ROOT_USER"))
-        .config("spark.hadoop.fs.s3a.secret.key",      os.getenv("MINIO_ROOT_PASSWORD"))
+        .config("spark.driver.memory", "2g")
+        .config("spark.executor.memory", "2g")           # ← Increase from 1g to 2g
+        .config("spark.executor.cores", "2") 
+        
+        # MinIO / S3A settings
+        .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
+        .config("spark.hadoop.fs.s3a.access.key", os.getenv("MINIO_ROOT_USER"))
+        .config("spark.hadoop.fs.s3a.secret.key", os.getenv("MINIO_ROOT_PASSWORD"))
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
-        .config("spark.hadoop.fs.s3a.impl",            "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.sql.parquet.compression.codec", "snappy")
+        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config("spark.hadoop.fs.s3a.aws.credentials.provider", 
+                "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
+        
+        # Explicit jars – this is the most reliable in Docker/Standalone
+        .config("spark.jars.packages", 
+                "org.apache.hadoop:hadoop-aws:3.3.4,"
+                "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
+                "org.postgresql:postgresql:42.7.6")
+        
+        
+        
         .getOrCreate()
     )
 
@@ -304,22 +319,54 @@ def run_validation(df: DataFrame, table: str) -> dict:
     return {"table": table, "checks": results, "passed": passed}
 
 # Write Silver — merge mode via partition overwrite (idempotent)
-def write_silver(df: DataFrame, bucket: str, table: str):
-    """
-    Uses partitionOverwriteMode=dynamic so only affected partitions
-    are replaced — safe for incremental reruns (idempotent).
-    """
-    path = f"s3a://{bucket}/silver/{table}"
-    logger.info(f"[{table}] Writing silver → {path}")
+from pyspark.sql import DataFrame
+import os
 
-    (
-        df.write
-        .option("partitionOverwriteMode", "dynamic")
-        .mode("overwrite")
-        .partitionBy("region", "year", "month", "day")
-        .parquet(path)
-    )
-    logger.info(f"[{table}] Silver write complete")
+def write_silver(df: DataFrame, table: str, primary_key: str):
+    pg_host = os.getenv("POSTGRES_HOST", "postgres")
+    pg_port = os.getenv("POSTGRES_PORT", "5432")
+    pg_db   = os.getenv("POSTGRES_DB", "streamcart_db")
+    pg_user = os.getenv("POSTGRES_USER", "postgres")
+    pg_pass = os.getenv("POSTGRES_PASSWORD", "postgres")
+
+    pg_url = f"jdbc:postgresql://{pg_host}:{pg_port}/{pg_db}"
+    silver_table  = f"silver.{table}"
+    staging_table = f"silver.{table}_staging"
+
+    # Write staging table via JDBC
+    df.write \
+      .format("jdbc") \
+      .option("url", pg_url) \
+      .option("dbtable", staging_table) \
+      .option("user", pg_user) \
+      .option("password", pg_pass) \
+      .option("driver", "org.postgresql.Driver") \
+      .mode("overwrite") \
+      .save()
+
+    # Merge into silver table using psycopg2
+    merge_sql = f"""
+    INSERT INTO {silver_table} SELECT * FROM {staging_table}
+    ON CONFLICT ({primary_key})
+    DO UPDATE SET
+      {', '.join([f"{c}=EXCLUDED.{c}" for c in df.columns if c != primary_key])};
+    """
+
+    import psycopg2
+    with psycopg2.connect(
+        host=pg_host,
+        port=pg_port,
+        dbname=pg_db,
+        user=pg_user,
+        password=pg_pass
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(merge_sql)
+        conn.commit()
+
+    logger.info(f"[{table}] Upsert complete")
+    
+    
 
 # Helper — get max event_time from a processed DataFrame
 def get_max_event_time(df: DataFrame) -> datetime:
@@ -341,7 +388,7 @@ def main():
 
     all_reports = []
 
-    for table, processor, _ in tables:
+    for table, processor, primary_key in tables:
         logger.info(f"\n{'#'*60}")
         logger.info(f"Processing: {table.upper()}")
         logger.info(f"{'#'*60}")
@@ -373,7 +420,7 @@ def main():
         # 5. Write Silver only if validation passes
         if report["passed"]:
             silver_df = add_partition_columns(silver_df)
-            write_silver(silver_df, bucket, table)
+            write_silver(silver_df,table,primary_key)
             logger.info(f"[{table}] Validation PASSED? {report['passed']}")
 
         else:
