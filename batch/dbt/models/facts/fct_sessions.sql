@@ -25,9 +25,9 @@ with events as (
 
 session_agg as (
     select
-        session_id,
-        user_id,
-        region,
+            session_id,
+            min(user_id) as user_id,
+            min(region) as region,
 
         min(occurred_at)                            as session_start_at,
         max(occurred_at)                            as session_end_at,
@@ -60,7 +60,7 @@ session_agg as (
         )[1]                                        as entry_referrer
 
     from events
-    group by session_id, user_id, region
+    group by session_id
 ),
 
 enriched as (

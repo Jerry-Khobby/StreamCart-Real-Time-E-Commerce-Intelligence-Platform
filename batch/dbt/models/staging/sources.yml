@@ -25,11 +25,13 @@ sources:
             tests:
               - not_null
               - accepted_values:
-                  values: ["USD", "EUR", "JPY", "NGN", "BRL"]
-          - name: order_status
+                  arguments:
+                    values: ["USD", "EUR", "JPY", "NGN", "BRL"]
+          - name: status
             tests:
               - accepted_values:
-                  values: ["completed", "pending", "refunded"]
+                  arguments:
+                    values: ["completed", "pending", "refunded", "failed"]
           - name: event_time
             tests: [not_null]
 

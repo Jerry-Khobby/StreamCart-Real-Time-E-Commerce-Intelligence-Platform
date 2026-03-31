@@ -92,7 +92,7 @@ def write_silver(df: DataFrame, spark: SparkSession, table: str, primary_key: st
     silver_tbl  = f"silver.{table}"
     staging_tbl = f"silver.{table}_staging"
 
-    logger.info(f"[{table}] Writing {df.count():,} rows to staging table {staging_tbl}")
+    logger.info(f"[{table}] Writing rows to staging table {staging_tbl}")
 
     # Step 1 — write to staging (full overwrite, safe to repeat)
     (
@@ -153,7 +153,7 @@ def load_watermark(spark: SparkSession, bucket: str, table: str) -> datetime:
     default = datetime.now(timezone.utc) - timedelta(hours=1) #reduce the hours to 1 
     try:
         df  = spark.read.text(_watermark_path(bucket, table))
-        if df.count() == 0:
+        if len(df.head(1)) == 0:
             return default
         raw  = df.collect()[0][0]
         data = json.loads(raw)
@@ -188,8 +188,7 @@ def read_bronze_incremental(
              .withColumn("event_time", to_timestamp("timestamp"))
              .filter(col("event_time") > lit(watermark.isoformat()))
     )
-    count = df.count()
-    logger.info(f"[{table}] Rows since watermark: {count:,}")
+    logger.info(f"[{table}] Bronze read complete")
     return df
 
 
@@ -235,6 +234,7 @@ def stitch_sessions(df: DataFrame) -> DataFrame:
 # Processors
 # ---------------------------------------------------------------------------
 def process_transactions(df: DataFrame, spark: SparkSession) -> Tuple[DataFrame, dict]:
+    df.cache()
     total = df.count()
     now   = datetime.now(timezone.utc)
 
@@ -260,11 +260,13 @@ def process_transactions(df: DataFrame, spark: SparkSession) -> Tuple[DataFrame,
         "amount_usd_normalised", "quantity", "payment_method",
         "status", "event_time", "fx_discrepancy"
     )
+    passed = df.count()
 
-    return df, {"total": total, "passed": df.count(), "rejected": total - df.count()}
+    return df, {"total": total, "passed": passed, "rejected": total - passed}
 
 
 def process_clickstream(df: DataFrame, spark: SparkSession) -> Tuple[DataFrame, dict]:
+    df.cache()
     total = df.count()
     now   = datetime.now(timezone.utc)
 
@@ -282,11 +284,13 @@ def process_clickstream(df: DataFrame, spark: SparkSession) -> Tuple[DataFrame, 
         "region", "page_type", "product_id", "search_query",
         "referrer", "user_agent", "event_time"
     )
+    passed = df.count()
 
-    return df, {"total": total, "passed": df.count(), "rejected": total - df.count()}
+    return df, {"total": total, "passed": passed, "rejected": total - passed}
 
 
 def process_inventory(df: DataFrame, spark: SparkSession) -> Tuple[DataFrame, dict]:
+    df.cache()
     total = df.count()
     now   = datetime.now(timezone.utc)
 

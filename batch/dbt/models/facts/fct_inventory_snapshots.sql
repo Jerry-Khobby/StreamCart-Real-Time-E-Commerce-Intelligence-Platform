@@ -27,7 +27,9 @@ with deltas as (
     select * from {{ ref('stg_inventory') }}
 
     {% if is_incremental() %}
-        where occurred_at > (select max(snapshot_date) from {{ this }})
+where event_date > (
+    select max(snapshot_date) from {{ this }}
+)
     {% endif %}
 ),
 

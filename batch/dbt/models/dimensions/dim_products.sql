@@ -1,67 +1,87 @@
--- models/dimensions/dim_customers.sql
--- One row per customer derived from transaction history.
--- SCD Type 1 (overwrite) — for SCD2 you'd add valid_from/valid_to
--- using dbt snapshots (see snapshots/ folder).
+-- models/dimensions/dim_products.sql
+-- One row per product derived from transaction history.
+-- Product master data would come from PostgreSQL in production;
+-- here we derive it from observed events.
 
 
 
 
 
 
-with customer_activity as (
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+with product_activity as (
     select
-        user_id,
-        min(occurred_at)                        as first_seen_at,
-        max(occurred_at)                        as last_seen_at,
-        count(distinct transaction_id)          as lifetime_order_count,
-        sum(amount_usd)                         as lifetime_revenue_usd,
-        avg(amount_usd)                         as avg_order_value_usd,
-        mode() within group (order by region)   as primary_region,
-        mode() within group (
-            order by payment_method
-        )                                       as preferred_payment_method,
-
-        -- Recency bucket (days since last order)
-        current_date - max(event_date)          as days_since_last_order
+        product_id,
+        mode() within group (order by product_category)  as category,
+        count(distinct transaction_id)                    as total_orders,
+        sum(quantity)                                     as total_units_sold,
+        sum(amount_usd)                                   as total_revenue_usd,
+        avg(amount_usd)                                   as avg_selling_price_usd,
+        min(amount_usd)                                   as min_price_usd,
+        max(amount_usd)                                   as max_price_usd,
+        min(occurred_at)                                  as first_sold_at,
+        max(occurred_at)                                  as last_sold_at,
+        count(distinct region)                            as regions_sold_in
 
     from {{ ref('stg_transactions') }}
     where order_status = 'completed'
-    group by user_id
+    group by product_id
 ),
 
-customer_segments as (
+product_ranked as (
     select
         *,
-        case
-            when lifetime_revenue_usd >= 5000                  then 'VIP'
-            when lifetime_revenue_usd >= 1000                  then 'High Value'
-            when lifetime_revenue_usd >= 200                   then 'Mid Tier'
-            else                                                    'Low Value'
-        end                                     as value_segment,
+        -- Revenue rank within category
+        rank() over (
+            partition by category
+            order by total_revenue_usd desc
+        )                                       as revenue_rank_in_category,
 
+        -- Popularity tier
         case
-            when days_since_last_order <= 30   then 'Active'
-            when days_since_last_order <= 90   then 'At Risk'
-            when days_since_last_order <= 180  then 'Lapsing'
-            else                                    'Churned'
-        end                                     as recency_segment
+            when total_units_sold >= 1000  then 'Bestseller'
+            when total_units_sold >= 500   then 'Popular'
+            when total_units_sold >= 100   then 'Regular'
+            else                               'Niche'
+        end                                     as popularity_tier
 
-    from customer_activity
+    from product_activity
 )
 
 select
-    {{ dbt_utils.generate_surrogate_key(['user_id']) }} as customer_key,
-    user_id,
-    primary_region,
-    preferred_payment_method,
-    value_segment,
-    recency_segment,
-    first_seen_at,
-    last_seen_at,
-    days_since_last_order,
-    lifetime_order_count,
-    lifetime_revenue_usd,
-    avg_order_value_usd,
+    {{ dbt_utils.generate_surrogate_key(['product_id']) }} as product_key,
+    product_id,
+    category,
+    popularity_tier,
+    revenue_rank_in_category,
+    total_orders,
+    total_units_sold,
+    total_revenue_usd,
+    avg_selling_price_usd,
+    min_price_usd,
+    max_price_usd,
+    regions_sold_in,
+    first_sold_at,
+    last_sold_at,
     current_timestamp                           as dbt_updated_at
 
-from customer_segments
+from product_ranked
