@@ -3,7 +3,7 @@
 CREATE SCHEMA IF NOT EXISTS silver;
 
 CREATE TABLE IF NOT EXISTS silver.transactions (
-    transaction_id          TEXT,
+    transaction_id          TEXT PRIMARY KEY,
     user_id                 TEXT,
     product_id              TEXT,
     category                TEXT,
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS silver.transactions (
 );
 
 CREATE TABLE IF NOT EXISTS silver.clickstream (
-    event_id                TEXT,
+    event_id                TEXT PRIMARY KEY,
     session_id              TEXT,
     session_id_silver       TEXT,
     user_id                 TEXT,
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS silver.clickstream (
 );
 
 CREATE TABLE IF NOT EXISTS silver.inventory (
-    event_id                TEXT,
+    event_id                TEXT PRIMARY KEY,
     product_id              TEXT,
     warehouse_id            TEXT,
     region                  TEXT,
