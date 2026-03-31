@@ -25,12 +25,12 @@
 
 with deltas as (
     select * from {{ ref('stg_inventory') }}
-
-    {% if is_incremental() %}
-where event_date > (
-    select max(snapshot_date) from {{ this }}
+{% if is_incremental() %}
+where event_date >= (
+    select max(snapshot_date) - interval '7 days'
+    from {{ this }}
 )
-    {% endif %}
+{% endif %}
 ),
 
 daily_deltas as (
@@ -108,7 +108,7 @@ enriched as (
 
 select
     {{ dbt_utils.generate_surrogate_key(
-        ['product_id', 'warehouse_id', 'snapshot_date']
+        ['product_id', 'warehouse_id', 'snapshot_date','region']
     ) }}                                        as surrogate_key,
     *
 from enriched
