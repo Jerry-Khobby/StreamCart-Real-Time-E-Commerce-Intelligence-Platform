@@ -2,9 +2,6 @@
 
 CREATE SCHEMA IF NOT EXISTS silver;
 
-
-CREATE SCHEMA IF NOT EXISTS gold;
-
 CREATE TABLE IF NOT EXISTS silver.transactions (
     transaction_id          TEXT PRIMARY KEY,
     user_id                 TEXT,
