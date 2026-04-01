@@ -61,6 +61,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET}
+      HOST_PROJECT_DIR: ${HOST_PROJECT_DIR}
       # App DB connection available inside DAGs
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
