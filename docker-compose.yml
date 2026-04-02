@@ -56,6 +56,7 @@ services:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
       AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+      COMPOSE_PROJECT_DIR: ${COMPOSE_PROJECT_DIR}
       # MinIO connection available inside DAGs
       MINIO_ENDPOINT: minio:9000
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -75,7 +76,6 @@ services:
       - ./producer:/opt/airflow/producer
       - ./logs:/opt/airflow/logs
       - ./data:/opt/airflow/data
-      - /var/run/docker.sock:/var/run/docker.sock
       - ./wait-for-postgres-and-init.sh:/opt/airflow/wait-for-postgres-and-init.sh
 
     entrypoint: ["/bin/bash", "-c"]
@@ -104,6 +104,7 @@ services:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
       AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+      COMPOSE_PROJECT_DIR: ${COMPOSE_PROJECT_DIR}
       MINIO_ENDPOINT: minio:9000
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
@@ -119,6 +120,7 @@ services:
       - ./producer:/opt/airflow/producer
       - ./logs:/opt/airflow/logs
       - ./data:/opt/airflow/data
+      - ./:/opt/streamcart
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8080:8080"
@@ -151,6 +153,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET}
+      COMPOSE_PROJECT_DIR: ${COMPOSE_PROJECT_DIR}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       POSTGRES_USER: ${POSTGRES_USER}
@@ -162,6 +165,7 @@ services:
       - ./producer:/opt/airflow/producer
       - ./logs:/opt/airflow/logs
       - ./data:/opt/airflow/data
+      - ./:/opt/streamcart
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - streamcart-net
