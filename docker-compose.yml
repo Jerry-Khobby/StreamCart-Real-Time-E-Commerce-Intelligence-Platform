@@ -1,3 +1,42 @@
+x-airflow-build: &airflow-build
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+x-airflow-env: &airflow-env
+  env_file: .env
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+    COMPOSE_PROJECT_DIR: ${COMPOSE_PROJECT_DIR}
+    HOST_PROJECT_DIR: ${HOST_PROJECT_DIR}
+    MINIO_ENDPOINT: minio:9000
+    MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+    MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    MINIO_BUCKET: ${MINIO_BUCKET}
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    POSTGRES_USER: ${POSTGRES_USER}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+x-airflow-volumes: &airflow-volumes
+  volumes:
+    - ./batch/dags:/opt/airflow/dags
+    - ./batch/dbt:/opt/airflow/dbt
+    - ./consumer:/opt/airflow/consumer
+    - ./producer:/opt/airflow/producer
+    - ./logs:/opt/airflow/logs
+    - ./data:/opt/airflow/data
+
+x-airflow-common: &airflow-common
+  <<: [*airflow-build, *airflow-env, *airflow-volumes]
+  networks:
+    - streamcart-net
+  restart: unless-stopped
+
 x-spark-common: &spark-common
   image: apache/spark:3.5.0-python3
   user: root
@@ -13,15 +52,12 @@ x-spark-common: &spark-common
     - ./producer:/opt/airflow/producer
     - ./logs:/opt/airflow/logs
     - ./data:/opt/airflow/data
-
   networks:
     - streamcart-net
   restart: unless-stopped
 
 services:
-  # ──────────────────────────────────────────────────────────────────────────
-  # PostgreSQL
-  # ──────────────────────────────────────────────────────────────────────────
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
   postgres:
     image: postgres:15-alpine
     container_name: streamcart-postgres
@@ -45,30 +81,10 @@ services:
       - streamcart-net
     restart: unless-stopped
 
+  # ── Airflow Init ───────────────────────────────────────────────────────────
   airflow-init:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    env_file: .env
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
-      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
-      COMPOSE_PROJECT_DIR: ${COMPOSE_PROJECT_DIR}
-      # MinIO connection available inside DAGs
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MINIO_BUCKET: ${MINIO_BUCKET}
-      HOST_PROJECT_DIR: ${HOST_PROJECT_DIR}
-      # App DB connection available inside DAGs
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-
+    <<: *airflow-common
+    container_name: streamcart-airflow-init
     volumes:
       - ./batch/dags:/opt/airflow/dags
       - ./batch/dbt:/opt/airflow/dbt
@@ -77,42 +93,19 @@ services:
       - ./logs:/opt/airflow/logs
       - ./data:/opt/airflow/data
       - ./wait-for-postgres-and-init.sh:/opt/airflow/wait-for-postgres-and-init.sh
-
     entrypoint: ["/bin/bash", "-c"]
     command: ["/opt/airflow/wait-for-postgres-and-init.sh"]
-    networks:
-      - streamcart-net
     restart: "no"
 
-  #define the remaining airflow services here
-
-  # Airflow Webserver
+  # ── Airflow Webserver ──────────────────────────────────────────────────────
   airflow-webserver:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *airflow-common
     container_name: streamcart-airflow-webserver
-    env_file: .env
     depends_on:
       airflow-init:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
-      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
-      COMPOSE_PROJECT_DIR: ${COMPOSE_PROJECT_DIR}
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MINIO_BUCKET: ${MINIO_BUCKET}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - ./batch/dags:/opt/airflow/dags
       - ./batch/dbt:/opt/airflow/dbt
@@ -124,40 +117,17 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8080:8080"
-    networks:
-      - streamcart-net
-    restart: unless-stopped
     command: webserver
 
-  # ──────────────────────────────────────────────────────────────────────────
-  # Airflow Scheduler
-  # ──────────────────────────────────────────────────────────────────────────
+  # ── Airflow Scheduler ──────────────────────────────────────────────────────
   airflow-scheduler:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *airflow-common
     container_name: streamcart-airflow-scheduler
-    env_file: .env
     depends_on:
       airflow-init:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
-      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MINIO_BUCKET: ${MINIO_BUCKET}
-      COMPOSE_PROJECT_DIR: ${COMPOSE_PROJECT_DIR}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - ./batch/dags:/opt/airflow/dags
       - ./batch/dbt:/opt/airflow/dbt
@@ -167,13 +137,9 @@ services:
       - ./data:/opt/airflow/data
       - ./:/opt/streamcart
       - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - streamcart-net
-    restart: unless-stopped
     command: scheduler
-  # ──────────────────────────────────────────────────────────────────────────
-  # MinIO
-  # ──────────────────────────────────────────────────────────────────────────
+
+  # ── MinIO ──────────────────────────────────────────────────────────────────
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1
     container_name: streamcart-minio
@@ -214,9 +180,7 @@ services:
       - streamcart-net
     restart: "no"
 
-  # ──────────────────────────────────────────────────────────────────────────
-  # Zookeeper
-  # ──────────────────────────────────────────────────────────────────────────
+  # ── Zookeeper ──────────────────────────────────────────────────────────────
   zookeeper:
     image: confluentinc/cp-zookeeper:7.7.7
     container_name: streamcart-zookeeper
@@ -235,9 +199,7 @@ services:
       - streamcart-net
     restart: unless-stopped
 
-  # ──────────────────────────────────────────────────────────────────────────
-  # Kafka
-  # ──────────────────────────────────────────────────────────────────────────
+  # ── Kafka ──────────────────────────────────────────────────────────────────
   kafka:
     image: confluentinc/cp-kafka:7.7.7
     container_name: streamcart-kafka
@@ -283,13 +245,9 @@ services:
       - streamcart-net
     restart: "no"
 
-  # ──────────────────────────────────────────────────────────────────────────
-  # Data Generator
-  # ──────────────────────────────────────────────────────────────────────────
+  # ── Data Generator ─────────────────────────────────────────────────────────
   data-generator:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *airflow-build
     container_name: streamcart-data-generator
     env_file: .env
     environment:
@@ -308,14 +266,15 @@ services:
       - streamcart-net
     restart: unless-stopped
 
-  # ──────────────────────────────────────────────────────────────────────────
-  # Spark
-  # ──────────────────────────────────────────────────────────────────────────
+  # ── Spark Master ───────────────────────────────────────────────────────────
   spark-master:
     <<: *spark-common
     container_name: streamcart-spark-master
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
     environment:
+      PYTHONPATH: /opt/airflow
+      DBT_PROFILES_DIR: /opt/airflow/dbt
+      DBT_TARGET: dev
       SPARK_MASTER_HOST: spark-master
       SPARK_MASTER_PORT: "7077"
       SPARK_MASTER_WEBUI_PORT: "8080"
@@ -329,21 +288,29 @@ services:
       retries: 5
       start_period: 20s
 
+  # ── Spark Worker ───────────────────────────────────────────────────────────
   spark-worker:
     <<: *spark-common
     container_name: streamcart-spark-worker
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     environment:
+      PYTHONPATH: /opt/airflow
+      DBT_PROFILES_DIR: /opt/airflow/dbt
+      DBT_TARGET: dev
       SPARK_WORKER_CORES: "8"
       SPARK_WORKER_MEMORY: "8g"
     depends_on:
       spark-master:
         condition: service_healthy
 
+  # ── Spark Bronze Job ───────────────────────────────────────────────────────
   spark-bronze-job:
     <<: *spark-common
     container_name: streamcart-spark-bronze
     environment:
+      PYTHONPATH: /opt/airflow
+      DBT_PROFILES_DIR: /opt/airflow/dbt
+      DBT_TARGET: dev
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET}
@@ -367,41 +334,44 @@ services:
         condition: service_completed_successfully
     restart: on-failure
 
+  # ── Spark Silver Job ───────────────────────────────────────────────────────
   spark-silver-job:
     <<: *spark-common
     container_name: streamcart-spark-silver
     environment:
       PYTHONPATH: /opt/airflow
+      DBT_PROFILES_DIR: /opt/airflow/dbt
+      DBT_TARGET: dev
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET}
     command: >
       /opt/spark/bin/spark-submit
-          --master local[2]
-          --packages org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262,org.postgresql:postgresql:42.7.3
-          --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000
-          --conf spark.hadoop.fs.s3a.access.key=${MINIO_ROOT_USER}
-          --conf spark.hadoop.fs.s3a.secret.key=${MINIO_ROOT_PASSWORD}
-          --conf spark.hadoop.fs.s3a.path.style.access=true
-          --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
-          --conf spark.sql.shuffle.partitions=4
-          --conf spark.driver.extraJavaOptions=-Dpython.path=/opt/airflow
-          /opt/airflow/consumer/silver_processor.py
+        --master local[2]
+        --packages org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262,org.postgresql:postgresql:42.7.3
+        --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000
+        --conf spark.hadoop.fs.s3a.access.key=${MINIO_ROOT_USER}
+        --conf spark.hadoop.fs.s3a.secret.key=${MINIO_ROOT_PASSWORD}
+        --conf spark.hadoop.fs.s3a.path.style.access=true
+        --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
+        --conf spark.sql.shuffle.partitions=4
+        --conf spark.driver.extraJavaOptions=-Dpython.path=/opt/airflow
+        /opt/airflow/consumer/silver_processor.py
     volumes:
-      - ./consumer:/opt/airflow/consumer # silver_processor.py lives here
-      - ./producer:/opt/airflow/producer # needed for logging_config import
+      - ./consumer:/opt/airflow/consumer
+      - ./producer:/opt/airflow/producer
       - ./data:/opt/airflow/data
       - ./logs:/opt/airflow/logs
       - ./jars:/opt/airflow/jars
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       spark-master:
         condition: service_healthy
     restart: "no"
 
+  # ── dbt Runner ─────────────────────────────────────────────────────────────
   dbt-runner:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *airflow-build
     container_name: streamcart-dbt-runner
     env_file: .env
     environment:
@@ -421,7 +391,6 @@ services:
         condition: service_healthy
     networks:
       - streamcart-net
-
     profiles:
       - tools
     entrypoint: ["tail", "-f", "/dev/null"]
