@@ -51,34 +51,13 @@ with DAG(
     run_silver = BashOperator(
         task_id="run_silver_spark",
         bash_command="""
-            set -e
-
-            echo "Cleaning up any leftover container..."
-            docker rm -f streamcart-spark-silver 2>/dev/null || true
-
-            echo "COMPOSE_PROJECT_DIR=$COMPOSE_PROJECT_DIR"
-            echo "Running spark-silver-job via docker-compose..."
-
-            docker-compose \
-                --project-directory "$COMPOSE_PROJECT_DIR" \
-                --file /opt/streamcart/docker-compose.yml \
-                --env-file /opt/streamcart/.env \
-                run --rm --no-deps \
-                spark-silver-job
-
-            echo "Spark silver job completed successfully."
-        """,
-        env={
-            "COMPOSE_PROJECT_DIR":            os.environ.get("COMPOSE_PROJECT_DIR", ""),
-            "MINIO_ROOT_USER":                os.environ.get("MINIO_ROOT_USER", ""),
-            "MINIO_ROOT_PASSWORD":            os.environ.get("MINIO_ROOT_PASSWORD", ""),
-            "MINIO_BUCKET":                   os.environ.get("MINIO_BUCKET", ""),
-            "POSTGRES_USER":                  os.environ.get("POSTGRES_USER", ""),
-            "POSTGRES_PASSWORD":              os.environ.get("POSTGRES_PASSWORD", ""),
-            "POSTGRES_DB":                    os.environ.get("POSTGRES_DB", ""),
-            "AIRFLOW__CORE__FERNET_KEY":      os.environ.get("AIRFLOW__CORE__FERNET_KEY", ""),
-            "AIRFLOW__WEBSERVER__SECRET_KEY": os.environ.get("AIRFLOW__WEBSERVER__SECRET_KEY", ""),
-        },
+        
+        cd /path/to/your/docker/project || exit 1 
+        
+        docker compose up  spark-silver-job
+        
+        
+        """
     )
 
     check_counts = PythonOperator(
@@ -88,3 +67,43 @@ with DAG(
     )
 
     run_silver >> check_counts
+    
+    
+    
+    
+    
+    
+    
+    
+        #run_silver = BashOperator(
+        #task_id="run_silver_spark",
+        #bash_command="""
+         #   set -e
+
+          #  echo "Cleaning up any leftover container..."
+           # docker rm -f streamcart-spark-silver 2>/dev/null || true
+
+            #echo "COMPOSE_PROJECT_DIR=$COMPOSE_PROJECT_DIR"
+            #echo "Running spark-silver-job via docker-compose..."
+
+            #docker-compose \
+             #   --project-directory "$COMPOSE_PROJECT_DIR" \
+              #  --file /opt/airflow/docker-compose.yml \
+               # --env-file /opt/airflow/.env \
+                #run --rm --no-deps \
+                #spark-silver-job
+
+#            echo "Spark silver job completed successfully."
+ #       """,
+  #      env={
+   #         "COMPOSE_PROJECT_DIR":            os.environ.get("COMPOSE_PROJECT_DIR", ""),
+    #        "MINIO_ROOT_USER":                os.environ.get("MINIO_ROOT_USER", ""),
+     #       "MINIO_ROOT_PASSWORD":            os.environ.get("MINIO_ROOT_PASSWORD", ""),
+      #      "MINIO_BUCKET":                   os.environ.get("MINIO_BUCKET", ""),
+       #     "POSTGRES_USER":                  os.environ.get("POSTGRES_USER", ""),
+        #    "POSTGRES_PASSWORD":              os.environ.get("POSTGRES_PASSWORD", ""),
+         #   "POSTGRES_DB":                    os.environ.get("POSTGRES_DB", ""),
+          #  "AIRFLOW__CORE__FERNET_KEY":      os.environ.get("AIRFLOW__CORE__FERNET_KEY", ""),
+           # "AIRFLOW__WEBSERVER__SECRET_KEY": os.environ.get("AIRFLOW__WEBSERVER__SECRET_KEY", ""),
+        #},
+    #)

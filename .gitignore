@@ -79,3 +79,9 @@ jars/
 
 jars/
 *.jar
+
+
+
+airflow.cfg 
+webserver_config.py 
+

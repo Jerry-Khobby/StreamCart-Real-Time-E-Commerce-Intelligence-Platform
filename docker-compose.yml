@@ -107,13 +107,7 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./batch/dags:/opt/airflow/dags
-      - ./batch/dbt:/opt/airflow/dbt
-      - ./consumer:/opt/airflow/consumer
-      - ./producer:/opt/airflow/producer
-      - ./logs:/opt/airflow/logs
-      - ./data:/opt/airflow/data
-      - ./:/opt/streamcart
+      - ./:/opt/airflow
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8080:8080"
@@ -129,13 +123,7 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./batch/dags:/opt/airflow/dags
-      - ./batch/dbt:/opt/airflow/dbt
-      - ./consumer:/opt/airflow/consumer
-      - ./producer:/opt/airflow/producer
-      - ./logs:/opt/airflow/logs
-      - ./data:/opt/airflow/data
-      - ./:/opt/streamcart
+      - ./:/opt/airflow
       - /var/run/docker.sock:/var/run/docker.sock
     command: scheduler
 
