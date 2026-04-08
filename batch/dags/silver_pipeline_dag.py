@@ -2,26 +2,28 @@
 DAG: silver_pipeline
 ====================
 Runs the Spark Silver batch job daily at 02:00 UTC.
+
+Uses BashOperator + docker-compose run. No DockerOperator.
+No /mnt/c/ paths. No bind mount issues.
 """
 
 import os
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.providers.docker.operators.docker import DockerOperator
+from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
-from docker.types import Mount 
 
 default_args = {
-    "owner": "streamcart",
-    "retries": 2,
-    "retry_delay": timedelta(minutes=10),
+    "owner":             "streamcart",
+    "retries":           1,
+    "retry_delay":       timedelta(minutes=5),
     "execution_timeout": timedelta(hours=2),
 }
 
+
 def log_silver_row_counts(**context):
-    """Log row counts after silver job completes."""
     hook = PostgresHook(postgres_conn_id="streamcart_postgres")
     tables = ["silver.transactions", "silver.clickstream", "silver.inventory"]
     print("\n" + "=" * 50)
@@ -35,6 +37,7 @@ def log_silver_row_counts(**context):
             print(f"  {table:<35} ERROR: {e}")
     print("=" * 50)
 
+
 with DAG(
     dag_id="silver_pipeline",
     description="Daily Silver batch: Bronze (MinIO) → Silver (Postgres)",
@@ -44,42 +47,37 @@ with DAG(
     default_args=default_args,
     tags=["streamcart", "silver", "spark"],
 ) as dag:
-    
-    run_silver = DockerOperator(
+
+    run_silver = BashOperator(
         task_id="run_silver_spark",
-        image="apache/spark:3.5.0-python3",
-        api_version="auto",
-        auto_remove=True,
-        mount_tmp_dir=False,
-        user="root",
-        command="""
-        bash -c "
-            # Create Ivy cache directory with proper permissions
-            mkdir -p /home/spark/.ivy2/cache /home/spark/.ivy2/jars && \
-            chown -R spark:spark /home/spark/.ivy2 && \
-            /opt/spark/bin/spark-submit \
-                --master local[2] \
-                --packages org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262,org.postgresql:postgresql:42.7.3 \
-                --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000 \
-                --conf spark.hadoop.fs.s3a.access.key=minioadmin \
-                --conf spark.hadoop.fs.s3a.secret.key=minioadmin123 \
-                --conf spark.hadoop.fs.s3a.path.style.access=true \
-                --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
-                /opt/airflow/consumer/silver_processor.py
-        "
+        bash_command="""
+            set -e
+
+            echo "Cleaning up any leftover container..."
+            docker rm -f streamcart-spark-silver 2>/dev/null || true
+
+            echo "COMPOSE_PROJECT_DIR=$COMPOSE_PROJECT_DIR"
+            echo "Running spark-silver-job via docker-compose..."
+
+            docker-compose \
+                --project-directory "$COMPOSE_PROJECT_DIR" \
+                --file /opt/streamcart/docker-compose.yml \
+                --env-file /opt/streamcart/.env \
+                run --rm --no-deps \
+                spark-silver-job
+
+            echo "Spark silver job completed successfully."
         """,
-        docker_url="unix://var/run/docker.sock",
-        network_mode="streamcart_streamcart-net",  # Make sure this matches your network
-        mounts=[
-            # Use absolute paths from the host perspective
-            Mount(source="/mnt/c/Users/JeremiahAnkuCoblah/Desktop/StreamCart-Real-Time-E-Commerce-Intelligence-Platform/consumer", target="/opt/airflow/consumer", type="bind"),
-            Mount(source="/mnt/c/Users/JeremiahAnkuCoblah/Desktop/StreamCart-Real-Time-E-Commerce-Intelligence-Platform/producer", target="/opt/airflow/producer", type="bind"),
-            Mount(source="/mnt/c/Users/JeremiahAnkuCoblah/Desktop/StreamCart-Real-Time-E-Commerce-Intelligence-Platform/logs", target="/opt/airflow/logs", type="bind"),
-            Mount(source="/mnt/c/Users/JeremiahAnkuCoblah/Desktop/StreamCart-Real-Time-E-Commerce-Intelligence-Platform/data", target="/opt/airflow/data", type="bind"),
-            Mount(source="/mnt/c/Users/JeremiahAnkuCoblah/Desktop/StreamCart-Real-Time-E-Commerce-Intelligence-Platform/jars", target="/opt/airflow/jars", type="bind"),
-        ],
-        environment={
-            "PYTHONPATH": "/opt/airflow",
+        env={
+            "COMPOSE_PROJECT_DIR":            os.environ.get("COMPOSE_PROJECT_DIR", ""),
+            "MINIO_ROOT_USER":                os.environ.get("MINIO_ROOT_USER", ""),
+            "MINIO_ROOT_PASSWORD":            os.environ.get("MINIO_ROOT_PASSWORD", ""),
+            "MINIO_BUCKET":                   os.environ.get("MINIO_BUCKET", ""),
+            "POSTGRES_USER":                  os.environ.get("POSTGRES_USER", ""),
+            "POSTGRES_PASSWORD":              os.environ.get("POSTGRES_PASSWORD", ""),
+            "POSTGRES_DB":                    os.environ.get("POSTGRES_DB", ""),
+            "AIRFLOW__CORE__FERNET_KEY":      os.environ.get("AIRFLOW__CORE__FERNET_KEY", ""),
+            "AIRFLOW__WEBSERVER__SECRET_KEY": os.environ.get("AIRFLOW__WEBSERVER__SECRET_KEY", ""),
         },
     )
 
