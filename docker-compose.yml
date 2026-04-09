@@ -91,6 +91,9 @@ services:
       - ./consumer:/opt/airflow/consumer
       - ./producer:/opt/airflow/producer
       - ./logs:/opt/airflow/logs
+      - ./.env:/opt/airflow/.env
+      - ./docker-compose.yml:/opt/airflow/docker-compose.yml
+      - ./Dockerfile:/opt/airflow/Dockerfile
       - ./data:/opt/airflow/data
       - ./wait-for-postgres-and-init.sh:/opt/airflow/wait-for-postgres-and-init.sh
     entrypoint: ["/bin/bash", "-c"]
@@ -107,7 +110,16 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./:/opt/airflow
+      - ./consumer:/opt/airflow/consumer
+      - ./producer:/opt/airflow/producer
+      - ./data:/opt/airflow/data
+      - ./batch/dags:/opt/airflow/dags
+      - ./batch/dbt:/opt/airflow/dbt
+      - ./logs:/opt/airflow/logs
+      - ./jars:/opt/airflow/jars
+      - ./.env:/opt/airflow/.env
+      - ./docker-compose.yml:/opt/airflow/docker-compose.yml
+      - ./Dockerfile:/opt/airflow/Dockerfile
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8080:8080"
@@ -123,7 +135,16 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./:/opt/airflow
+      - ./consumer:/opt/airflow/consumer
+      - ./producer:/opt/airflow/producer
+      - ./batch/dags:/opt/airflow/dags
+      - ./batch/dbt:/opt/airflow/dbt
+      - ./data:/opt/airflow/data
+      - ./logs:/opt/airflow/logs
+      - ./jars:/opt/airflow/jars
+      - ./.env:/opt/airflow/.env
+      - ./docker-compose.yml:/opt/airflow/docker-compose.yml
+      - ./Dockerfile:/opt/airflow/Dockerfile
       - /var/run/docker.sock:/var/run/docker.sock
     command: scheduler
 
@@ -346,11 +367,14 @@ services:
         --conf spark.driver.extraJavaOptions=-Dpython.path=/opt/airflow
         /opt/airflow/consumer/silver_processor.py
     volumes:
+      - ./.env:/opt/airflow/.env
       - ./consumer:/opt/airflow/consumer
       - ./producer:/opt/airflow/producer
       - ./data:/opt/airflow/data
       - ./logs:/opt/airflow/logs
       - ./jars:/opt/airflow/jars
+      - ./docker-compose.yml:/opt/airflow/docker-compose.yml
+      - ./Dockerfile:/opt/airflow/Dockerfile
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       spark-master:
