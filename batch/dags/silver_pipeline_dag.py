@@ -9,73 +9,83 @@ Airflow Scheduler → docker compose run → spark-silver-job → Postgres
 No bind path hacks.
 No manual container deletion.
 """
+#consumer / silver_processor.py 
+from pyspark.sql import SparkSession 
+from consumer.silver_processor import (
+    create_spark_session,
+    read_bronze_incremental,
+    process_transactions,
+    process_clickstream,
+    process_inventory,
+    write_silver,
+    load_watermark,
+    save_watermark
+)
 
-from datetime import datetime, timedelta
+import os
 
 from airflow import DAG
-from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
-from airflow.providers.postgres.hooks.postgres import PostgresHook
+from datetime import datetime, timedelta
+from consumer.silver_processor import run_silver_pipeline
+
+
+def run_silver_pipeline():
+    spark = create_spark_session()
+    bucket = os.getenv("MINIO_BUCKET")
+
+    # Transactions
+    transactions_wm = load_watermark(spark, bucket, "transactions")
+    df_trans = read_bronze_incremental(spark, bucket, "transactions", transactions_wm)
+    df_trans, metrics_trans = process_transactions(df_trans, spark)
+    write_silver(df_trans, spark, "transactions", "transaction_id")
+    save_watermark(spark, bucket, "transactions", df_trans.agg({"event_time": "max"}).collect()[0][0])
+
+    # Repeat for clickstream
+    click_wm = load_watermark(spark, bucket, "clickstream")
+    df_click = read_bronze_incremental(spark, bucket, "clickstream", click_wm)
+    df_click, metrics_click = process_clickstream(df_click, spark)
+    write_silver(df_click, spark, "clickstream", "event_id")
+    save_watermark(spark, bucket, "clickstream", df_click.agg({"event_time": "max"}).collect()[0][0])
+
+    # Repeat for inventory
+    inventory_wm = load_watermark(spark, bucket, "inventory")
+    df_inventory = read_bronze_incremental(spark, bucket, "inventory", inventory_wm)
+    df_inventory, metrics_inv = process_inventory(df_inventory, spark)
+    write_silver(df_inventory, spark, "inventory", "event_id")
+    save_watermark(spark, bucket, "inventory", df_inventory.agg({"event_time": "max"}).collect()[0][0])
+
+    spark.stop()
+    return {
+        "transactions": metrics_trans,
+        "clickstream": metrics_click,
+        "inventory": metrics_inv
+    }
+    
+    
+
+# batch/dags/silver_pipeline_dag.py
 
 
 default_args = {
-    "owner": "streamcart",
-    "retries": 1,
-    "retry_delay": timedelta(minutes=5),
-    "execution_timeout": timedelta(hours=2),
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
 }
 
-
-def log_silver_row_counts():
-    hook = PostgresHook(postgres_conn_id="streamcart_postgres")
-
-    tables = [
-        "silver.transactions",
-        "silver.clickstream",
-        "silver.inventory",
-    ]
-
-    print("\n" + "=" * 60)
-    print("SILVER ROW COUNTS")
-    print("=" * 60)
-
-    for table in tables:
-        try:
-            count = hook.get_first(f"SELECT COUNT(*) FROM {table}")[0]
-            print(f"{table:<35} {count:>10,} rows")
-        except Exception as e:
-            print(f"{table:<35} ERROR: {e}")
-
-    print("=" * 60)
-
-
 with DAG(
-    dag_id="silver_pipeline",
-    description="Bronze (MinIO) → Silver (Postgres)",
-    start_date=datetime(2024, 1, 1),
-    schedule="0 2 * * *",
-    catchup=False,
+    dag_id='silver_pipeline',
     default_args=default_args,
-    tags=["streamcart", "spark", "silver"],
+    start_date=datetime(2026, 4, 1),
+    schedule_interval='0 2 * * *',  # daily at 02:00 UTC
+    catchup=False,
+    max_active_runs=1
 ) as dag:
 
-    run_silver = BashOperator(
-        task_id="run_silver_spark",
-        bash_command="""
-    set -e
-    echo "Starting Spark Silver job..."
-
-    docker-compose \
-        -f /opt/airflow/docker-compose.yml \
-        run --rm --no-deps spark-silver-job
-
-    echo "Spark Silver job finished."
-    """,
+    run_silver_task = PythonOperator(
+        task_id='run_silver_pipeline',
+        python_callable=run_silver_pipeline
     )
 
-    check_counts = PythonOperator(
-        task_id="check_silver_counts",
-        python_callable=log_silver_row_counts,
-    )
-
-    run_silver >> check_counts
+    run_silver_task
