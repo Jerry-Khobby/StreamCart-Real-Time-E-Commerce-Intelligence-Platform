@@ -20,4 +20,11 @@ airflow users create \
     --role Admin \
     --email admin@example.com
 
+echo "Creating Spark connection..."
+airflow connections add spark_default \
+    --conn-type spark \
+    --conn-host spark://spark-master \
+    --conn-port 7077 \
+    || echo "spark_default connection already exists — skipping"
+
 echo "Airflow DB initialized. Exiting."

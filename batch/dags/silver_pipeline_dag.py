@@ -1,17 +1,13 @@
 """
 DAG: silver_pipeline
 ====================
-Runs the Spark Silver batch job daily at 02:00 UTC.
+Runs the Spark Silver batch job every hour.
 
-Architecture:
-Airflow Scheduler → docker compose run → spark-silver-job → Postgres
+Airflow Scheduler → SparkSubmitOperator → spark-master:7077 → Postgres (silver schema)
 
-No bind path hacks.
-No manual container deletion.
+The actual processing logic lives in consumer/silver_processor.py.
+This DAG only submits that script to the running Spark cluster.
 """
-#consumer / silver_processor.py 
-
-
 
 from datetime import datetime, timedelta
 
@@ -19,57 +15,62 @@ from airflow import DAG
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 
 default_args = {
-"owner": "airflow",
-"depends_on_past": False,
-"retries": 1,
-"retry_delay": timedelta(minutes=5),
+    "owner": "streamcart",
+    "depends_on_past": False,
+    "retries": 2,
+    "retry_delay": timedelta(minutes=5),
+    "email_on_failure": False,
 }
 
 with DAG(
-dag_id="silver_pipeline",
-description="Run StreamCart Silver Spark batch pipeline",
-default_args=default_args,
-start_date=datetime(2026, 4, 1),
-schedule="0 2 * * *",   # Daily at 02:00 UTC
-catchup=False,
-max_active_runs=1,
-tags=["streamcart", "spark", "silver"],
+    dag_id="silver_pipeline",
+    default_args=default_args,
+    description="Hourly Bronze → Silver batch job via Spark",
+    schedule_interval="@hourly",
+    start_date=datetime(2025, 1, 1),
+    catchup=False,
+    tags=["silver", "spark", "batch"],
 ) as dag:
 
-   run_silver_spark = SparkSubmitOperator(
-    task_id="run_silver_spark",
+    run_silver = SparkSubmitOperator(
+        task_id="run_silver_processor",
+        application="/opt/airflow/consumer/silver_processor.py",
+        conn_id="spark_default",
+        master="spark://spark-master:7077",
 
-    # Script location inside container
-    application="/opt/airflow/consumer/silver_processor.py",
+        # Same packages used by the bronze job + postgresql JDBC driver
+        packages=(
+            "org.apache.hadoop:hadoop-aws:3.3.4,"
+            "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
+            "org.postgresql:postgresql:42.7.3"
+        ),
 
-    # Spark cluster
-    conn_id="spark_default",
+        # MinIO / S3A config
+        conf={
+            "spark.hadoop.fs.s3a.endpoint":                    "http://minio:9000",
+            "spark.hadoop.fs.s3a.path.style.access":           "true",
+            "spark.hadoop.fs.s3a.impl":                        "org.apache.hadoop.fs.s3a.S3AFileSystem",
+            "spark.hadoop.fs.s3a.aws.credentials.provider":    "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
+            "spark.sql.shuffle.partitions":                     "4",
+            "spark.driver.memory":                              "2g",
+            "spark.executor.memory":                            "2g",
+        },
 
-    # Spark master
-    conf={
-        "spark.master": "spark://spark-master:7077",
+        # Credentials are injected via environment — Spark picks them up through os.getenv()
+        env_vars={
+            "MINIO_ROOT_USER":   "{{ var.value.get('MINIO_ROOT_USER', '') }}",
+            "MINIO_ROOT_PASSWORD": "{{ var.value.get('MINIO_ROOT_PASSWORD', '') }}",
+            "MINIO_BUCKET":      "{{ var.value.get('MINIO_BUCKET', 'streamcart-data') }}",
+            "POSTGRES_HOST":     "postgres",
+            "POSTGRES_PORT":     "5432",
+            "POSTGRES_DB":       "{{ var.value.get('POSTGRES_DB', 'streamcart_db') }}",
+            "POSTGRES_USER":     "{{ var.value.get('POSTGRES_USER', 'postgres') }}",
+            "POSTGRES_PASSWORD": "{{ var.value.get('POSTGRES_PASSWORD', 'postgres') }}",
+        },
 
-        "spark.hadoop.fs.s3a.endpoint": "http://minio:9000",
-        "spark.hadoop.fs.s3a.access.key": "{{ var.value.MINIO_ROOT_USER }}",
-        "spark.hadoop.fs.s3a.secret.key": "{{ var.value.MINIO_ROOT_PASSWORD }}",
-        "spark.hadoop.fs.s3a.path.style.access": "true",
+        # Python path so silver_processor can import from producer/
+        driver_java_options="-DPYTHONPATH=/opt/airflow",
 
-        "spark.sql.shuffle.partitions": "4",
-    },
-
-    # Jars from your jars folder
-    jars="/opt/airflow/jars/postgresql-42.7.6.jar",
-
-    # Spark packages required
-    packages="org.apache.hadoop:hadoop-aws:3.3.4,"
-             "com.amazonaws:aws-java-sdk-bundle:1.12.262",
-
-    executor_memory="2g",
-    driver_memory="2g",
-
-    verbose=True,
-)
-
-
-run_silver_spark
-
+        verbose=True,
+        execution_timeout=timedelta(minutes=30),
+    )
