@@ -87,6 +87,10 @@ x-producer-common: &producer-common
     - streamcart-net
 
 # ── SERVICES ────────────────────────────────────────────────────────────────
+# start_period only stops failures being counted while a service boots, and a
+# service still turns healthy as soon as it's ready. It's set high because a cold
+# start of this whole stack can take minutes, and compose abandons anything that
+# depends on a service it has marked unhealthy.
 
 services:
   # ══════════════════════════════════════════════════════════════════════════
@@ -112,7 +116,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 300s
     networks:
       - streamcart-net
     restart: unless-stopped
@@ -137,7 +141,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 15s
+      start_period: 300s
     networks:
       - streamcart-net
     restart: unless-stopped
@@ -156,7 +160,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 20s
+      start_period: 300s
     networks:
       - streamcart-net
     restart: unless-stopped
@@ -189,7 +193,7 @@ services:
       interval: 15s
       timeout: 10s
       retries: 10
-      start_period: 30s
+      start_period: 300s
     networks:
       - streamcart-net
     restart: unless-stopped
@@ -230,7 +234,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 10
-      start_period: 20s
+      start_period: 300s
     networks:
       - streamcart-net
     restart: unless-stopped
@@ -282,7 +286,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 300s
 
   # ── Airflow scheduler (DAG execution engine) ──────────────────────────────
   airflow-scheduler:
@@ -303,7 +307,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 300s
 
   # ══════════════════════════════════════════════════════════════════════════
   # PROCESSING LAYER (Spark)
@@ -323,7 +327,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 300s
 
   # ── Spark worker (execution node) ─────────────────────────────────────────
   # 2 cores for the streaming Bronze job + 2 for whichever batch job is running.
@@ -342,7 +346,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 300s
 
   # ── Spark Bronze layer (Kafka → MinIO streaming) ──────────────────────────
   spark-bronze-job:
@@ -402,7 +406,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 300s
 
   # ══════════════════════════════════════════════════════════════════════════
   # REAL-TIME LAYER
