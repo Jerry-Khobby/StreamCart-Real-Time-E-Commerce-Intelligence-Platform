@@ -374,7 +374,8 @@ services:
         --conf spark.executor.memory=1g
         --conf spark.sql.shuffle.partitions=4
         /opt/airflow/consumer/spark_streaming.py
-    restart: on-failure:5
+    # Always restart: the checkpoint resumes exactly where the stream stopped.
+    restart: unless-stopped
 
   # ══════════════════════════════════════════════════════════════════════════
   # DATA GENERATION LAYER
