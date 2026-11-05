@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 from airflow.models import DagBag
 
-DAG_FOLDER = os.getenv("DAG_FOLDER", str(Path(__file__).resolve().parent.parent / "batch" / "dags"))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+# The containers mount batch/dags at /opt/airflow/dags.
+DEFAULT_DAG_FOLDER = REPO_ROOT / "dags" if (REPO_ROOT / "dags").exists() else REPO_ROOT / "batch" / "dags"
+DAG_FOLDER = os.getenv("DAG_FOLDER", str(DEFAULT_DAG_FOLDER))
 
 EXPECTED = {
     "silver_pipeline": "@hourly",
@@ -27,6 +30,8 @@ def dagbag():
 
 def test_no_import_errors(dagbag):
     assert dagbag.import_errors == {}
+    # An empty or wrong folder also has no import errors, so check DAGs were found.
+    assert set(EXPECTED) <= set(dagbag.dags)
 
 
 @pytest.mark.parametrize("dag_id,schedule", EXPECTED.items())
