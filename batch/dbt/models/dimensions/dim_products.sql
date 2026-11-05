@@ -1,41 +1,21 @@
 -- models/dimensions/dim_products.sql
--- One row per product derived from transaction history.
+-- One row per product with any non-failed order, so every fct_orders row has a
+-- product_key. Sales metrics count completed orders only.
 -- Product master data would come from PostgreSQL in production;
 -- here we derive it from observed events.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 with product_activity as (
     select
         product_id,
         mode() within group (order by product_category)  as category,
-        count(distinct transaction_id)                    as total_orders,
-        sum(quantity)                                     as total_units_sold,
-        sum(amount_usd)                                   as total_revenue_usd,
-        avg(amount_usd)                                   as avg_selling_price_usd,
+        count(distinct transaction_id) filter (where order_status = 'completed')
+                                                          as total_orders,
+        coalesce(sum(quantity) filter (where order_status = 'completed'), 0)
+                                                          as total_units_sold,
+        coalesce(sum(amount_usd) filter (where order_status = 'completed'), 0)
+                                                          as total_revenue_usd,
+        avg(amount_usd) filter (where order_status = 'completed')
+                                                          as avg_selling_price_usd,
         min(amount_usd)                                   as min_price_usd,
         max(amount_usd)                                   as max_price_usd,
         min(occurred_at)                                  as first_sold_at,
@@ -43,7 +23,6 @@ with product_activity as (
         count(distinct region)                            as regions_sold_in
 
     from {{ ref('stg_transactions') }}
-    where order_status = 'completed'
     group by product_id
 ),
 

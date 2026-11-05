@@ -1,13 +1,12 @@
 # models/staging/sources.yml
 # Declares the Silver-layer tables that dbt reads from.
-# Airflow loads Silver Parquet data into these Postgres tables
-# before dbt runs.
+# The Silver Spark job merges into Iceberg, then publishes to these Postgres tables.
 
 version: 2
 
 sources:
   - name: silver
-    description: "Cleaned and validated data loaded from MinIO Silver zone into Postgres."
+    description: "Cleaned and validated Silver data, published from Iceberg to Postgres."
     database: "{{ env_var('POSTGRES_DB') }}"
     schema: silver
 
@@ -25,13 +24,11 @@ sources:
             tests:
               - not_null
               - accepted_values:
-                  arguments:
-                    values: ["USD", "EUR", "JPY", "NGN", "BRL"]
+                  values: ["USD", "EUR", "JPY", "NGN", "BRL"]
           - name: status
             tests:
               - accepted_values:
-                  arguments:
-                    values: ["completed", "pending", "refunded", "failed"]
+                  values: ["completed", "pending", "refunded", "failed"]
           - name: event_time
             tests: [not_null]
 

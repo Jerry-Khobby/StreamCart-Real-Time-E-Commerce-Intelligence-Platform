@@ -3,14 +3,6 @@
 -- session_id_silver is the stitched session from the Silver processor;
 -- we use that here instead of the raw session_id.
 
-
-
-
-
-
-
-
-
 with source as (
     select * from {{ source('silver', 'clickstream') }}
 ),

@@ -2,13 +2,6 @@
 -- Grain: one row per region per day.
 -- Powers the Grafana/Superset revenue trend dashboards.
 
-
-
-
-
-
-
-
 {{
     config(
         materialized   = 'incremental',
@@ -21,7 +14,7 @@ with orders as (
     select * from {{ ref('fct_orders') }}
 
     {% if is_incremental() %}
-        where event_date > (select max(event_date) from {{ this }})
+        where event_date >= (select max(event_date) - 3 from {{ this }})
     {% endif %}
 )
 
@@ -63,7 +56,7 @@ select
     count(case when payment_method = 'paypal'        then 1 end) as paypal_orders,
     count(case when payment_method = 'crypto'        then 1 end) as crypto_orders,
 
-    -- Category breakdown (top 3 by revenue)
+    -- Category breakdown
     sum(case when product_category = 'Electronics'   then amount_usd else 0 end) as revenue_electronics,
     sum(case when product_category = 'Clothing'      then amount_usd else 0 end) as revenue_clothing,
     sum(case when product_category = 'Jewellery'     then amount_usd else 0 end) as revenue_jewellery,

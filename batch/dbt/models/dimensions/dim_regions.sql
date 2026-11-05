@@ -2,17 +2,6 @@
 -- Static region reference table.
 -- In a real project this would be a seed CSV; here it's inline.
 
-
-
-
-
-
-
-
-
-
-
-
 with regions as (
     select *
     from (values

@@ -1,11 +1,5 @@
 -- models/staging/stg_inventory.sql
 
-
-
-
-
-
-
 with source as (
     select * from {{ source('silver', 'inventory') }}
 ),
@@ -18,6 +12,8 @@ renamed as (
         region,
         update_type,
         quantity_delta,
+        stock_after,
+        reorder_point,
 
         event_time::timestamptz                 as occurred_at,
         date_trunc('day', event_time)::date     as event_date,

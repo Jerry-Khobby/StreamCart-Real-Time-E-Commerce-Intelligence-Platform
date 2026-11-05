@@ -2,10 +2,6 @@
 -- Grain: one row per warehouse per day.
 -- Feeds Grafana inventory risk heatmap and restock decision engine.
 
-
-
-
-
 {{
     config(
         materialized   = 'incremental',
@@ -18,7 +14,7 @@ with snapshots as (
     select * from {{ ref('fct_inventory_snapshots') }}
 
     {% if is_incremental() %}
-        where snapshot_date > (select max(snapshot_date) from {{ this }})
+        where snapshot_date >= (select max(snapshot_date) - 3 from {{ this }})
     {% endif %}
 )
 

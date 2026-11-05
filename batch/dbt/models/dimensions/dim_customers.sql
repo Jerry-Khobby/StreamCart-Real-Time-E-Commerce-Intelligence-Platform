@@ -1,24 +1,20 @@
 -- models/dimensions/dim_customers.sql
--- One row per customer derived from transaction history.
+-- One row per customer with any non-failed order, so every fct_orders row has a
+-- customer_key. Lifetime metrics count completed orders only.
 -- SCD Type 1 (overwrite) — for SCD2 you'd add valid_from/valid_to
 -- using dbt snapshots (see snapshots/ folder).
-
-
-
-
-
-
-
-
 
 with customer_activity as (
     select
         user_id,
         min(occurred_at)                        as first_seen_at,
         max(occurred_at)                        as last_seen_at,
-        count(distinct transaction_id)          as lifetime_order_count,
-        sum(amount_usd)                         as lifetime_revenue_usd,
-        avg(amount_usd)                         as avg_order_value_usd,
+        count(distinct transaction_id) filter (where order_status = 'completed')
+                                                as lifetime_order_count,
+        coalesce(sum(amount_usd) filter (where order_status = 'completed'), 0)
+                                                as lifetime_revenue_usd,
+        avg(amount_usd) filter (where order_status = 'completed')
+                                                as avg_order_value_usd,
         mode() within group (order by region)   as primary_region,
         mode() within group (
             order by payment_method
@@ -28,7 +24,6 @@ with customer_activity as (
         current_date - max(event_date)          as days_since_last_order
 
     from {{ ref('stg_transactions') }}
-    where order_status = 'completed'
     group by user_id
 ),
 
