@@ -56,16 +56,19 @@ def main():
     parser.add_argument("--date", required=True, type=date.fromisoformat, help="Day to extract (UTC)")
     args = parser.parse_args()
     start, end = args.date, args.date + timedelta(days=1)
-    window = f"created_at >= '{start}' AND created_at < '{end}'"
+
+    def window(column: str) -> str:
+        return f"{column} >= '{start}' AND {column} < '{end}'"
 
     spark = create_spark_session("StreamCart-OLTP-Extract")
     spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {CATALOG}.bronze")
 
-    load(spark, read_query(spark, f"SELECT * FROM oltp.orders WHERE {window}"), "oltp_orders", "order_id")
+    orders = read_query(spark, f"SELECT * FROM oltp.orders WHERE {window('created_at')}")
+    load(spark, orders, "oltp_orders", "order_id")
     # Payments carry their order's region so both tables share one partition layout.
     payments = read_query(spark, f"""
         SELECT p.*, o.region FROM oltp.payments p JOIN oltp.orders o USING (order_id)
-        WHERE p.{window}
+        WHERE {window('p.created_at')}
     """)
     load(spark, payments, "oltp_payments", "payment_id")
 
