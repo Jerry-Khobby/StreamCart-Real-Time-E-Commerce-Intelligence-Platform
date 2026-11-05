@@ -27,6 +27,7 @@ FLUSH_SECONDS = 2.0
 LAG_SAMPLE_SECONDS = 30
 PRUNE_SECONDS = 3600
 RETENTION = "48 hours"
+MAX_AMOUNT_USD = 50_000
 
 SQL = {
     "transactions": """
@@ -69,7 +70,7 @@ def to_row(topic, event):
     Map a Kafka event to (row, event_time), or None if it shouldn't be served.
 
     Silver is where bad data gets counted and rejected. Here it's just skipped,
-    so a bad timestamp can't distort the live dashboards.
+    so a bad timestamp or amount can't distort the live dashboards.
     """
     if topic in ("transactions", "inventory_updates") and event.get("is_backfill"):
         return None
@@ -81,6 +82,10 @@ def to_row(topic, event):
         return None
 
     if topic == "transactions":
+        # Same bounds as Silver: one $999,999 fault would swamp the live revenue figure.
+        amount = event["amount_usd"]
+        if event["user_id"] is None or amount is None or not 0 < amount < MAX_AMOUNT_USD:
+            return None
         row = (event["transaction_id"], event["user_id"], event["region"],
                event["amount_usd"], event["status"], event_time)
     elif topic == "fraud_alerts":
