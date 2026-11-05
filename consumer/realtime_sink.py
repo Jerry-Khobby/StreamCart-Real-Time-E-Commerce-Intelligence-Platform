@@ -164,8 +164,9 @@ def main():
         "bootstrap.servers": os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092"),
         "group.id": "realtime-sink",
         "enable.auto.commit": False,
-        "auto.offset.reset": "latest",
-        # ksqlDB creates its output topics after this service may have started.
+        # ksqlDB creates its output topics after this service may have started, so
+        # "latest" could miss their first events. Replays are safe: writes are upserts.
+        "auto.offset.reset": "earliest",
         "topic.metadata.refresh.interval.ms": 30000,
         "allow.auto.create.topics": False,
     })
