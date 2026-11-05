@@ -1,5 +1,5 @@
 -- StreamCart real-time layer (ksqlDB).
--- Applied by the ksqldb-init service. Every statement is idempotent.
+-- Applied by streaming/ksql/apply.sh. Every statement here is idempotent.
 
 SET 'auto.offset.reset' = 'earliest';
 
@@ -30,7 +30,7 @@ CREATE STREAM IF NOT EXISTS transactions_live AS
 
 -- ── Fraud alerts ────────────────────────────────────────────────────────────
 -- Per-event signals. ksqlDB can't join a stream to a windowed table, so
--- VELOCITY_BREACH can't sit in this CASE; it is inserted separately below.
+-- VELOCITY_BREACH can't sit in this CASE; see velocity_insert.sql.
 CREATE STREAM IF NOT EXISTS fraud_alerts
   WITH (KAFKA_TOPIC = 'fraud_alerts', VALUE_FORMAT = 'AVRO', PARTITIONS = 5) AS
   SELECT
@@ -74,17 +74,6 @@ CREATE STREAM IF NOT EXISTS user_velocity_breaches (
     REGION VARCHAR,
     EVENT_TIME VARCHAR
   ) WITH (KAFKA_TOPIC = 'user_velocity_1h', VALUE_FORMAT = 'AVRO');
-
-INSERT INTO fraud_alerts
-  SELECT
-    TRANSACTION_ID,
-    USER_ID,
-    AMOUNT_USD,
-    REGION,
-    'VELOCITY_BREACH' AS FRAUD_SIGNAL,
-    EVENT_TIME
-  FROM user_velocity_breaches
-  EMIT CHANGES;
 
 -- ── Live inventory alerts ───────────────────────────────────────────────────
 CREATE STREAM IF NOT EXISTS restock_required

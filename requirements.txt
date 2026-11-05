@@ -10,6 +10,3 @@ confluent-kafka
 fastavro
 great-expectations==0.18.19
 pytest
-# Used only by the Bronze/Silver code as it stood before the Avro migration
-kafka-python==2.0.2
-python-dotenv

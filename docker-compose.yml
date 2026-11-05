@@ -3,9 +3,11 @@
 # ============================================================================
 # Service topology:
 #   Infrastructure: postgres, minio, zookeeper, kafka, schema-registry
-#   Orchestration: airflow (init, webserver, scheduler)
-#   Processing: spark (master, worker, bronze-job)
-#   Data generation: data-generator
+#   Orchestration:   airflow (init, webserver, scheduler)
+#   Processing:      spark (master, worker, bronze job)
+#   Real-time:       ksqldb, realtime-sink
+#   Data generation: data-seed (one-shot history), data-generator (live)
+#   Serving:         api, grafana, superset
 # ============================================================================
 
 # ── YAML ANCHORS ────────────────────────────────────────────────────────────
@@ -40,6 +42,9 @@ x-airflow-volumes: &airflow-volumes
     - ./batch/dbt:/opt/airflow/dbt
     - ./consumer:/opt/airflow/consumer
     - ./producer:/opt/airflow/producer
+    - ./quality:/opt/airflow/quality
+    - ./schemas:/opt/airflow/schemas
+    - ./tests:/opt/airflow/tests
     - ./logs:/opt/airflow/logs
 
 x-airflow-common: &airflow-common
@@ -57,10 +62,28 @@ x-spark-common: &spark-common
   volumes:
     - ./consumer:/opt/airflow/consumer
     - ./producer:/opt/airflow/producer
+    - ./schemas:/opt/airflow/schemas
     - ./logs:/opt/airflow/logs
   networks:
     - streamcart-net
   restart: unless-stopped
+
+# Shared by the live generator, the history seed and the schema registration step.
+x-producer-common: &producer-common
+  <<: *platform-image
+  env_file: .env
+  environment:
+    USE_KAFKA: "true"
+    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    SCHEMA_REGISTRY_URL: http://schema-registry:8081
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+  volumes:
+    - ./producer:/opt/airflow/producer:ro
+    - ./schemas:/opt/airflow/schemas:ro
+    - ./logs:/opt/airflow/logs
+  networks:
+    - streamcart-net
 
 # ── SERVICES ────────────────────────────────────────────────────────────────
 
@@ -153,6 +176,7 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_RETENTION_HOURS: "168"
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
     ports:
       - "9092:9092"
       - "9093:9093"
@@ -181,6 +205,41 @@ services:
       "
     networks:
       - streamcart-net
+    restart: "no"
+
+  # ── Schema Registry (Avro contracts) ──────────────────────────────────────
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.7.7
+    container_name: streamcart-schema-registry
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_HEAP_OPTS: "-Xms128m -Xmx256m"
+    ports:
+      - "${SCHEMA_REGISTRY_HOST_PORT:-8085}:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/subjects || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - streamcart-net
+    restart: unless-stopped
+
+  schema-init:
+    <<: *producer-common
+    container_name: streamcart-schema-init
+    depends_on:
+      schema-registry:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    command: python -m producer.register_schemas
     restart: "no"
 
   # ══════════════════════════════════════════════════════════════════════════
@@ -250,6 +309,8 @@ services:
   spark-master:
     <<: *spark-common
     container_name: streamcart-spark-master
+    environment:
+      SPARK_DAEMON_MEMORY: 256m
     command: ["spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077 --webui-port 8080"]
     ports:
       - "${SPARK_UI_HOST_PORT:-8081}:8080"
@@ -270,6 +331,7 @@ services:
         condition: service_healthy
     environment:
       SPARK_WORKER_DIR: /tmp/spark-work
+      SPARK_DAEMON_MEMORY: 256m
     command: ["spark-class org.apache.spark.deploy.worker.Worker --cores 4 --memory 3g --webui-port 8081 spark://spark-master:7077"]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8081 || exit 1"]
@@ -308,30 +370,172 @@ services:
   # DATA GENERATION LAYER
   # ══════════════════════════════════════════════════════════════════════════
 
-  # ── Data generator (synthetic event producer) ─────────────────────────────
+  # ── History seed: runs once, so batch dashboards have trends on first start ─
+  data-seed:
+    <<: *producer-common
+    container_name: streamcart-data-seed
+    depends_on:
+      schema-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    command: python -m producer.data_generator --mode backfill --days 14 --tx-per-day 2000
+    restart: "no"
+
+  # ── Data generator (live synthetic events) ────────────────────────────────
   data-generator:
-    <<: *platform-image
+    <<: *producer-common
     container_name: streamcart-data-generator
     depends_on:
-      kafka-init:
+      schema-init:
         condition: service_completed_successfully
-    env_file: .env
-    environment:
-      USE_KAFKA: "true"
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-    volumes:
-      - ./producer:/opt/airflow/producer:ro
-      - ./logs:/opt/airflow/logs
-    command: python /opt/airflow/producer/data_generator.py --mode all
-    networks:
-      - streamcart-net
+      postgres:
+        condition: service_healthy
+    command: python -m producer.data_generator --mode all
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f data_generator.py || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f data_generator || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # REAL-TIME LAYER
+  # ══════════════════════════════════════════════════════════════════════════
+
+  # ── ksqlDB (fraud alerts and low-stock detection) ─────────────────────────
+  ksqldb-server:
+    image: confluentinc/cp-ksqldb-server:7.7.7
+    container_name: streamcart-ksqldb
+    depends_on:
+      schema-registry:
+        condition: service_healthy
+    environment:
+      KSQL_BOOTSTRAP_SERVERS: kafka:9092
+      KSQL_LISTENERS: http://0.0.0.0:8088
+      KSQL_KSQL_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      KSQL_KSQL_SERVICE_ID: streamcart_
+      KSQL_KSQL_INTERNAL_TOPIC_REPLICAS: 1
+      KSQL_KSQL_SINK_REPLICAS: 1
+      KSQL_KSQL_STREAMS_REPLICATION_FACTOR: 1
+      KSQL_KSQL_LOGGING_PROCESSING_TOPIC_REPLICATION_FACTOR: 1
+      KSQL_HEAP_OPTS: "-Xms256m -Xmx512m"
+    ports:
+      - "${KSQLDB_HOST_PORT:-8088}:8088"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8088/info || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+    networks:
+      - streamcart-net
+    restart: unless-stopped
+
+  ksqldb-init:
+    image: confluentinc/cp-ksqldb-cli:7.7.7
+    container_name: streamcart-ksqldb-init
+    depends_on:
+      ksqldb-server:
+        condition: service_healthy
+      schema-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./streaming/ksql:/ksql:ro
+    entrypoint: ["/bin/bash", "/ksql/apply.sh"]
+    networks:
+      - streamcart-net
+    restart: "no"
+
+  # ── Serving sink (Kafka → Postgres realtime schema) ───────────────────────
+  realtime-sink:
+    <<: *producer-common
+    container_name: streamcart-realtime-sink
+    depends_on:
+      ksqldb-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./consumer:/opt/airflow/consumer:ro
+      - ./producer:/opt/airflow/producer:ro
+      - ./logs:/opt/airflow/logs
+    command: python -m consumer.realtime_sink
+    restart: unless-stopped
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # SERVING LAYER
+  # ══════════════════════════════════════════════════════════════════════════
+
+  # ── REST API (live inventory and online fraud features) ───────────────────
+  api:
+    build: ./api
+    image: streamcart-api:latest
+    container_name: streamcart-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    networks:
+      - streamcart-net
+    restart: unless-stopped
+
+  # ── Grafana (real-time and observability dashboards) ──────────────────────
+  grafana:
+    image: grafana/grafana-oss:11.5.8
+    container_name: streamcart-grafana
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./dashboards/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./dashboards/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "${GRAFANA_HOST_PORT:-3000}:3000"
+    networks:
+      - streamcart-net
+    restart: unless-stopped
+
+  # ── Superset (self-service BI over Gold) ──────────────────────────────────
+  superset-init:
+    build: ./dashboards/superset
+    image: streamcart-superset:latest
+    container_name: streamcart-superset-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    command: ["/app/streamcart/init.sh"]
+    networks:
+      - streamcart-net
+    restart: "no"
+
+  superset:
+    image: streamcart-superset:latest
+    container_name: streamcart-superset
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    env_file: .env
+    ports:
+      - "${SUPERSET_HOST_PORT:-8089}:8088"
+    networks:
+      - streamcart-net
+    restart: unless-stopped
 
 # ── VOLUMES ─────────────────────────────────────────────────────────────────
 
@@ -339,6 +543,8 @@ volumes:
   postgres-data:
     driver: local
   minio-data:
+    driver: local
+  grafana-data:
     driver: local
 
 # ── NETWORKS ────────────────────────────────────────────────────────────────
