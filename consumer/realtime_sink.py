@@ -12,7 +12,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import psycopg2
-from confluent_kafka import Consumer, KafkaError, TopicPartition
+from confluent_kafka import Consumer, KafkaError, KafkaException, TopicPartition
 from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroDeserializer
 from confluent_kafka.serialization import MessageField, SerializationContext
@@ -205,7 +205,11 @@ def main():
             flush(conn, consumer, batches)
             last_flush = now
         if now - last_lag >= LAG_SAMPLE_SECONDS:
-            sample_lag(conn, consumer, latencies)
+            # Lag is only a metric: a slow broker must not take down the data path.
+            try:
+                sample_lag(conn, consumer, latencies)
+            except KafkaException as exc:
+                logger.warning(f"Skipping this lag sample: {exc}")
             last_lag = now
         if now - last_prune >= PRUNE_SECONDS:
             prune(conn)
