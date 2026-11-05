@@ -175,6 +175,9 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      # ksqlDB writes its command topic in transactions. The defaults need 3 brokers.
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_RETENTION_HOURS: "168"
       KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
@@ -422,6 +425,7 @@ services:
       KSQL_KSQL_STREAMS_REPLICATION_FACTOR: 1
       KSQL_KSQL_LOGGING_PROCESSING_TOPIC_REPLICATION_FACTOR: 1
       KSQL_HEAP_OPTS: "-Xms256m -Xmx512m"
+      KSQL_CONFLUENT_SUPPORT_METRICS_ENABLE: "false"
     ports:
       - "${KSQLDB_HOST_PORT:-8088}:8088"
     healthcheck:
@@ -429,7 +433,8 @@ services:
       interval: 15s
       timeout: 5s
       retries: 15
-      start_period: 40s
+      # First start creates ksqlDB's internal topics, which can take several minutes.
+      start_period: 420s
     networks:
       - streamcart-net
     restart: unless-stopped
