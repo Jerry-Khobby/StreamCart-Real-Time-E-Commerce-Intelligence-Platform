@@ -4,7 +4,7 @@ A full explanation of what StreamCart does, how the pipeline works, and what eac
 
 ## Read this first: the status of the project
 
-StreamCart is fully written but has never run from start to finish, so it isn't ready to list on a CV as working. Everything below describes what the code is designed to do. Treat each behaviour as a design until the end-to-end run confirms it.
+StreamCart is fully written but has never run from start to finish, so its behaviour is still unproven. Everything below describes what the code is designed to do. Treat each behaviour as a design until the end-to-end run confirms it.
 
 | Part | State |
 | --- | --- |
@@ -15,6 +15,31 @@ StreamCart is fully written but has never run from start to finish, so it isn't 
 | Pipeline, dashboards and fraud alerts | Not yet run |
 
 Some failures are likely on the first run, because this much new code hasn't been executed yet.
+
+## Coming back to the project
+
+The original build covered roughly the first half of the batch path, and work stopped while trying to get Spark to run from Airflow. The last commits tried `DockerOperator`, then `BashOperator`, then `SparkSubmitOperator`. The real causes are listed under "Problems that blocked the original build" further down.
+
+### What existed, and what happened to it
+
+| Part | Original version | Now |
+| --- | --- | --- |
+| Simulator | JSON events through `kafka-python`, with fraud, bots and funnels | Same idea, rewritten: Avro, region partitions, stock tracking, injected bad data |
+| Bronze | Spark Streaming writing Parquet to MinIO, partitioned by region and date | Same stream and partitioning, now in Iceberg tables with durable checkpoints |
+| Silver | Spark job with cleaning rules, watermarks and a staging-table upsert to Postgres | Same structure and upsert. Added Great Expectations, Iceberg `MERGE INTO`, rate-based bot detection and historical FX |
+| dbt | All 11 Gold models, with staging and tests | Same models with their bugs fixed. One model added: `agg_customer_retention` |
+| Airflow | `silver_pipeline`, `gold_dbt_pipeline`, `fx_rates_refresh` | All three kept and fixed. Five DAGs added |
+| Compose | Postgres, MinIO, Zookeeper, Kafka, Airflow, Spark, generator | Same core, with one shared image and the new services |
+
+### What didn't exist before
+
+- Schema Registry and Avro contracts
+- ksqlDB fraud and low-stock rules
+- The serving sink and REST API
+- Grafana and Superset dashboards
+- Great Expectations suites and observability monitoring
+- The OLTP database, 90-day retention and weekly backfill
+- Automated tests and all documentation
 
 ## The project in plain English
 
@@ -313,7 +338,7 @@ One Postgres instance holds all of these, which keeps memory use practical on on
 
 ## Engineering decisions worth explaining
 
-These decisions are what separate this project from a tutorial, so learn the reasoning behind each. An interviewer will care more about why than what.
+If you can explain why each of these choices was made and what it costs, you understand the project.
 
 ### Problems that blocked the original build
 
@@ -350,43 +375,267 @@ These decisions are what separate this project from a tutorial, so learn the rea
 - **Future timestamps:** clickstream sessions contained events dated ahead of the current time.
 - **Crash in backfill:** `backfill()` passed a `verbose=` argument that `emit()` doesn't accept.
 
-## Using this on your CV
+## How the core concepts work
 
-Use these bullets only after the end-to-end run works, and change any that the run doesn't confirm. An interviewer can ask you to start the project or open a dashboard.
+Each concept below is explained in general first, then in how this project uses it. If you understand these, most questions about the project answer themselves.
 
-### Before you list it
+### Kafka: topics, partitions and offsets
 
-- [ ] Rebuild the image and pass the automated tests
-- [ ] Run the full pipeline from Kafka to Superset
-- [ ] See real fraud alerts in Grafana
-- [ ] Add dashboard screenshots to the README
-- [ ] Replace "Not yet run" in the README's status table
-- [ ] Merge `feat/complete-platform` into `main`, since `main` is what visitors see first
-- [ ] Be able to explain every section of this guide without notes
+Kafka is an append-only log. A **topic** is a named log, split into **partitions**, and each message in a partition has a numbered position called an **offset**. Consumers track their own offset, so reading a message doesn't delete it and many consumers can read the same data.
 
-### Draft CV entry
+- **Ordering** is only guaranteed within a partition.
+- **Consumer groups** share a topic's partitions between members, so adding consumers adds throughput.
+- **Here:** 5 partitions per topic, one per region, set explicitly through `REGION_PARTITIONS`. Hashing the key could have put two regions on one partition.
+- **Here:** ksqlDB, Spark and the serving sink all read the same topics independently.
 
-**StreamCart: Real-Time E-Commerce Data Lakehouse** | Kafka, Spark, Iceberg, ksqlDB, Airflow, dbt, Great Expectations, PostgreSQL, Grafana, Superset, Docker
+### Avro and Schema Registry
 
-- Built a data lakehouse serving real-time fraud and inventory alerts and batch analytics from one Kafka event stream, across 5 simulated markets.
-- Implemented Bronze, Silver and Gold layers using Spark Structured Streaming and Apache Iceberg on MinIO, with idempotent `MERGE INTO` writes and time travel.
-- Wrote ksqlDB streaming rules that detect high-value, velocity and geographic fraud signals, and publish low-stock alerts to Kafka.
-- Enforced data quality with Great Expectations gates in Silver, Avro contracts in Schema Registry, and dbt tests including foreign key checks.
-- Modelled a dbt star schema of 4 dimensions, 3 facts and 5 KPI aggregates, covering revenue, fraud, inventory, funnel and retention.
-- Orchestrated 8 Airflow DAGs for ingestion, reprocessing, 90-day retention and monitoring, tracking row counts, freshness and schema changes in Grafana.
+Avro encodes data in binary using a schema, so messages are small and fields have fixed types. Schema Registry stores each schema with an ID. Each message starts with a 5-byte header, a marker byte plus that 4-byte ID, followed by the Avro data.
 
-Add real measurements once you have them, such as alert latency or rows processed. Only use numbers you've observed, and describe the data as simulated.
+- **Here:** that header is why `spark_streaming.py` uses `substring(value, 6, ...)` before decoding.
+- **BACKWARD compatibility** means consumers on a new schema can read old data. Adding a field needs a default value.
+- **`auto.register.schemas: False`** stops producers from changing the contract by accident. Only `register_schemas.py` registers schemas.
 
-### Likely interview questions
+### Spark Structured Streaming
 
-| Question | The core of the answer |
+Spark treats a stream as a table that keeps growing and processes it in small **micro-batches**. A **checkpoint** records which offsets have been processed, so a restart continues where it stopped.
+
+- **Here:** a 60-second trigger on three separate streams, one per topic.
+- **Here:** checkpoints are in MinIO, so they survive a container restart. The original `/tmp` checkpoints wouldn't have.
+- **Driver and executors:** the driver plans the work and executors run it. Executors must connect back to the driver, which is why `spark.driver.host` is set.
+- **Client mode:** the driver runs where `spark-submit` was called. For batch jobs that's the Airflow scheduler container.
+
+### Apache Iceberg
+
+A plain folder of Parquet files has no transactions, so a reader can see half-finished writes and updates are hard. Iceberg adds a metadata layer that tracks exactly which files belong to a table.
+
+- **Snapshots:** each commit creates a new version of the table, which is what makes time travel possible.
+- **`MERGE INTO`:** updates rows that match a key and inserts the rest, so rerunning a batch doesn't create duplicates.
+- **Catalog:** records which metadata file is current. Swapping that pointer is the atomic commit, and this project stores it in Postgres.
+- **Maintenance:** one-minute commits create many small files and snapshots, so `bronze_maintenance` compacts files and expires old snapshots.
+
+### ksqlDB: streams, tables and windows
+
+ksqlDB runs continuous SQL queries over Kafka. A **stream** is a series of events, and a **table** holds the latest value per key. A persistent query keeps running and writes its results to a new topic.
+
+- **Hopping window:** `SIZE 1 HOUR, ADVANCE BY 5 MINUTES` means overlapping one-hour windows starting every 5 minutes. That's how a rolling hourly count works.
+- **Here:** one breach falls into several overlapping windows, which can produce repeat alerts. The sink's primary key removes them.
+- **Here:** `HAVING COUNT(*) > 10` makes the table emit only breaches.
+
+### Star schema and dbt
+
+A star schema puts measurable events in a central **fact** table, linked to descriptive **dimension** tables. Analysts can then slice orders by customer, product, date or region with simple joins.
+
+dbt turns `SELECT` statements into tables and works out the build order from `ref()`.
+
+- **Materialisations:** staging models are views, dimensions are rebuilt as tables, and facts and most aggregates are incremental.
+- **Incremental:** only recent data is reprocessed. The `is_incremental()` blocks choose the window, and `unique_key` merges changes in.
+- **Surrogate key:** a hash that identifies each row, from `dbt_utils.generate_surrogate_key`.
+- **Tests:** rules such as `unique`, `not_null`, `accepted_values` and `relationships`, run as queries that should return no rows.
+
+### Airflow
+
+A **DAG** is a workflow of tasks with dependencies, written in Python. The scheduler starts tasks on schedule, and an **executor** decides where they run.
+
+- **Here:** `LocalExecutor` runs tasks as processes inside the scheduler container.
+- **Pool:** `spark_batch` has one slot, so only one Spark batch job runs at a time.
+- **`catchup=False`:** Airflow doesn't run every missed interval after downtime.
+- **Idempotency:** retries and replays are safe, because the writes they repeat are upserts.
+
+### Watermarks
+
+A watermark records how far a batch job has read, so the next run only handles new rows. Silver stores it in MinIO as the latest `_ingested_at` value per table, and moves it only after a successful write. That gives **at-least-once** processing, and `MERGE INTO` makes a repeat harmless.
+
+## The code, file by file
+
+Read the files in this order, because it follows the data from source to dashboard. The functions listed are the ones worth opening first.
+
+### Producing events
+
+| File | What it does | Look at |
+| --- | --- | --- |
+| `producer/config.py` | Markets, currencies, warehouses, product catalogue and demand weights | `REGION_PARTITIONS`, `USER_HOME_REGION` |
+| `producer/data_generator.py` | Generates all events and sends them to Kafka and Postgres | `generate_transaction`, `generate_fraud_scenario`, `corrupt_transaction`, `generate_session`, `StockBook`, `EventPublisher`, `OltpWriter`, `backfill` |
+| `producer/register_schemas.py` | Registers the Avro contracts and sets BACKWARD compatibility | `main` |
+| `schemas/avro/*.avsc` | The field contract for each topic | `transactions-value.avsc` |
+
+### Bronze and Silver
+
+| File | What it does | Look at |
+| --- | --- | --- |
+| `consumer/lakehouse.py` | Shared Spark session, Iceberg catalog settings and the merge helper | `create_spark_session`, `merge_into` |
+| `consumer/spark_streaming.py` | Streams Kafka into Bronze | `read_topic`, `ensure_table` |
+| `consumer/silver_processor.py` | Cleans and validates Bronze into Silver | `process_table`, `filter_bots`, `stitch_sessions`, `normalise_currency`, `write_silver` |
+| `quality/validation.py` | Runs a table's Great Expectations suite | `validate` |
+| `quality/expectations/*.json` | The validation rules | `transactions.json` |
+| `consumer/oltp_extract.py` | Daily pull from the transactional database | `load` |
+| `consumer/bronze_maintenance.py` | Retention, compaction and snapshot expiry | `archive_expired` |
+
+`process_table` is the most important function in the project. It contains the whole Silver sequence in one place, so start there.
+
+### Real-time
+
+| File | What it does | Look at |
+| --- | --- | --- |
+| `streaming/ksql/streamcart.sql` | Defines streams, the velocity table and the alert rules | `fraud_alerts`, `user_velocity_1h`, `restock_required` |
+| `streaming/ksql/velocity_insert.sql` | Adds velocity breaches to `fraud_alerts` | The `INSERT INTO` query |
+| `streaming/ksql/apply.sh` | Applies the SQL, running the insert only once | The `SHOW QUERIES` guard |
+| `consumer/realtime_sink.py` | Copies live topics into Postgres | `to_row`, `flush`, `sample_lag` |
+| `api/main.py` | The REST endpoints | `fraud_features`, `low_stock` |
+
+### Orchestration and modelling
+
+| File | What it does | Look at |
+| --- | --- | --- |
+| `batch/dags/common.py` | Spark settings shared by DAGs | `SPARK_CONF` |
+| `batch/dags/*_dag.py` | The 8 DAGs | `silver_pipeline_dag.py`, `gold_dbt_pipeline_dag.py` |
+| `batch/dags/observability_monitor_dag.py` | Row counts, freshness and schema changes | `detect_schema_changes` |
+| `batch/dbt/models/staging/` | Views that rename and cast Silver columns | `stg_transactions.sql` |
+| `batch/dbt/models/dimensions/`, `facts/`, `aggregates/` | The Gold tables | `fct_orders.sql`, `agg_fraud_summary.sql` |
+| `batch/dbt/models/schema.yml` | dbt tests for Gold | The `fct_orders` section |
+| `batch/db/init/*.sql` | Creates the Postgres schemas on first start | `01_oltp_schema.sql` |
+
+### Infrastructure and dashboards
+
+| File | What it does |
 | --- | --- |
-| Why two paths? | Fraud alerts need seconds and reports need accuracy, and one pipeline optimises badly for both |
-| What does Iceberg add over plain Parquet? | Transactions, `MERGE INTO`, snapshots and schema evolution |
-| How do you avoid duplicates? | Deduplicate by ID, then `MERGE INTO` on the primary key, so replays change nothing |
-| What happens if bad data arrives? | Rules remove it, the counts are recorded, and a failed gate blocks the write and fails the task |
-| What happens if a Silver run fails? | The watermark doesn't move, so the next run retries the same rows |
-| How do you handle late events? | The watermark uses arrival time, so they're picked up, and the 7-day rule decides if they're accepted |
-| Why partition Kafka by region? | Markets can be consumed in parallel and order is kept per region |
-| What are the weak points? | One Postgres and one Spark worker are single points of failure, and fraud rules are duplicated across layers |
-| What would you change for production? | Separate databases, replicated Kafka, a managed object store, lake-based Gold, and alerting on failures |
+| `Dockerfile` | Builds the shared image: Airflow, PySpark, connector jars, and dbt in its own virtualenv |
+| `docker-compose.yml` | Defines the 22 services and their start order |
+| `wait-for-postgres-and-init.sh` | Prepares Airflow's database, admin user and Spark pool |
+| `.env.example` | Template for the local settings |
+| `dashboards/grafana/` | Grafana datasource and dashboard JSON |
+| `dashboards/superset/build_bundle.py` | Generates the Superset database, datasets, charts and dashboard |
+| `tests/` | Simulator, Silver and DAG tests |
+
+### Service start order
+
+One-shot services run and exit, and later services wait for them:
+
+1. Postgres, MinIO and Zookeeper start, then Kafka.
+2. `kafka-init` creates the topics.
+3. Schema Registry starts, then `schema-init` registers the contracts.
+4. `data-seed` loads history, and `data-generator` starts streaming.
+5. ksqlDB starts, `ksqldb-init` applies the SQL, then `realtime-sink` starts.
+6. `airflow-init` runs, then the Airflow webserver and scheduler start.
+7. The Spark master and worker start, then the Bronze job.
+8. The API and Grafana start, and `superset-init` runs before Superset.
+
+## What happens when something fails
+
+Most failures recover by replaying data, because Kafka and Bronze keep it and the writes are upserts. Postgres is the main exception, since so much depends on it. This table describes the design, and none of these failures have been tested yet.
+
+| What fails | What happens | How it recovers |
+| --- | --- | --- |
+| A producer sends an event that breaks the contract | Serialisation fails, the generator exits and Docker restarts it | Fix the code or contract |
+| Bronze streaming job crashes | Nothing is written to Bronze, but events wait in Kafka for 7 days | Restarts up to 5 times, then resumes from its checkpoint. After that it needs a manual restart |
+| Silver crashes mid-run | The watermark doesn't move | The next run rereads those rows, and `MERGE INTO` absorbs the repeats |
+| Silver quality gate fails | That table isn't written, its watermark stays put and the task fails, but other tables continue | Retries twice, and it stays blocked until the data or rule is fixed |
+| Postgres publish fails after the Iceberg merge | The upsert rolls back and the watermark doesn't move | The next run repeats the merge and the publish |
+| Airflow scheduler stops | Batch jobs stop, but Kafka, Bronze and the speed path continue | `catchup=False` skips missed intervals, and the watermark means the next Silver run reads everything new |
+| FX rate API is down | `fx_rates_refresh` fails and retries 3 times | Silver keeps using the latest stored rate |
+| dbt source tests fail | Gold isn't rebuilt, so yesterday's tables stay in place | Fix Silver, then rerun the DAG |
+| dbt Gold tests fail | The DAG fails, but the new tables have already been built, so analysts can see the bad data | Fix the model and rerun. This is a real weakness |
+| ksqlDB restarts | Alerts pause | Queries resume from their Kafka offsets |
+| Serving sink crashes | Dashboards go stale | Docker restarts it and it replays from its last commit, with upserts removing repeats |
+| MinIO is down | Bronze, Silver and maintenance fail, but the speed path continues | Jobs recover through their checkpoint or watermark |
+| Postgres is down | Almost everything stops: Airflow, the Iceberg catalog, dbt, the sink and the dashboards | Kafka keeps events, and jobs catch up after it returns. This is the biggest single point of failure |
+
+### Known limitations
+
+- **One of everything:** one Kafka broker, one Spark worker and one Postgres, so nothing is highly available.
+- **Rules live in two places:** fraud rules in ksqlDB and `agg_fraud_summary` can drift apart.
+- **Simple fraud rules:** fixed thresholds catch the simulated patterns, and no model has been trained. The API only serves features.
+- **Simulator state:** the stock ledger is held in memory, so stock levels reset when the generator restarts.
+- **Tied together:** the simulator writes to both Kafka and Postgres without a transaction, so they could briefly disagree.
+- **Local credentials:** `.env.example` has development passwords, and Grafana and Superset use the Postgres admin account.
+- **Weather isn't used yet:** it's collected in `silver.weather_hourly`, but no Gold model uses it.
+
+## Questions to test yourself
+
+Try to answer each question aloud before reading the answer. If you can't, go back to that topic and read the code.
+
+### The big picture
+
+| Question | Answer |
+| --- | --- |
+| What does the project do in one sentence? | It turns a simulated shop's events into live fraud and stock alerts, and into validated analytics tables |
+| Why two paths rather than one? | Alerts need seconds and reports need accuracy, and one pipeline optimises badly for both |
+| Is any of the data real? | No. Orders, clicks and stock are simulated. FX rates and weather come from real public APIs |
+| What is a lakehouse? | Cheap file storage with database features such as transactions and updates, here from Iceberg on MinIO |
+| Why keep raw data in Bronze? | So you can replay it through corrected rules, and audit what actually arrived |
+| Why does Gold live in Postgres? | dbt targets Postgres, and Superset queries it directly. It's simple, but wouldn't scale like a lake engine |
+
+### Streaming
+
+| Question | Answer |
+| --- | --- |
+| Why partition by region? | Markets can be processed in parallel, and order is kept within each market |
+| How is a partition chosen? | Explicitly, from `REGION_PARTITIONS`, because hashing could send two regions to one partition |
+| What stops a producer from breaking consumers? | Avro contracts, BACKWARD compatibility, and producers being unable to register schemas |
+| Why are `user_id` and `amount_usd` nullable? | So bad values reach Silver, where they can be counted and rejected |
+| How does velocity detection work? | A hopping one-hour window counts orders per user, and `HAVING COUNT(*) > 10` emits the breaches |
+| Why isn't velocity in the main fraud `CASE`? | ksqlDB can't join a stream to a windowed table, so it's inserted by a separate query |
+| How do repeat alerts get removed? | The sink's primary key on transaction and signal ignores repeats |
+| Why is there a sink at all? | Grafana and the API query Postgres, not Kafka |
+| How does seed data avoid raising alerts? | `transactions_live` filters out `IS_BACKFILL = true` |
+
+### Batch and quality
+
+| Question | Answer |
+| --- | --- |
+| How are duplicates handled? | Window deduplication by ID within a batch, then `MERGE INTO` on the primary key across batches |
+| What does idempotent mean here? | Reprocessing the same rows leaves the table unchanged |
+| Why track watermarks on ingestion time? | Tracking event time would skip late arrivals |
+| Why validate twice? | The raw check measures input quality, and the clean check is the gate that blocks writes |
+| How is a bot detected? | A bot user agent, or 5+ events in a session averaging under 3 seconds apart |
+| Why not use a bot label from the simulator? | The filter would prove nothing, and real traffic has no such label |
+| How do session IDs stay stable? | They hash the user and the session's first event time, using two hours of earlier events for context |
+| Which FX rate is used? | The latest hourly rate at or before the order, or a fixed fallback if none is that old |
+| What does `fx_discrepancy` mean? | The reported USD amount differs from the recalculated one by more than 1% |
+| How is a user checked as real? | A broadcast join against `oltp.users` |
+| Why are old events rejected, but seed data isn't? | Seed rows are flagged `is_backfill`, which leaves their event age null |
+| Why does Silver write to Iceberg and Postgres? | Iceberg is the lakehouse copy, and Postgres is the copy dbt builds from |
+
+### Modelling and orchestration
+
+| Question | Answer |
+| --- | --- |
+| Fact versus dimension? | Facts record events and measures, and dimensions describe them |
+| What is the grain of `fct_orders`? | One row per non-failed order |
+| Why reprocess recent days in aggregates? | Today's figures are partial, so a `> max(date)` filter would freeze them |
+| Why does `fct_inventory_snapshots` read full history? | Its 7-day demand window needs earlier rows, and only recent days are merged |
+| What is a retention cohort? | Customers grouped by the week of their first order, tracked across later weeks |
+| Why run dbt per layer, not per model? | Concurrent dbt runs would conflict over `target/`, and dbt already orders models within a layer |
+| Why one shared Docker image? | The driver and executors must share Python and Spark versions |
+| Why is Bronze capped at 2 cores? | Otherwise it takes all 4, and batch jobs wait forever for resources |
+| What does the `spark_batch` pool do? | Allows one Spark batch job at a time on the single worker |
+| What triggers Gold? | A daily 03:00 UTC schedule, or the weekly backfill |
+| How are schema changes detected? | `observability_monitor` compares warehouse columns and Kafka contract versions against the last saved state |
+
+### Judgement
+
+| Question | Answer |
+| --- | --- |
+| What's the weakest part? | Postgres does too many jobs, and every core component is a single instance |
+| What would you change for production? | Separate databases, a replicated Kafka, managed object storage, lake-based Gold, and alerts on failures |
+| How would it handle far more data? | Add Kafka partitions and Spark workers, and move Gold off Postgres to a lake query engine |
+| How would you improve fraud detection? | Train a model on the API's features, using the simulator's `_is_fraud` labels to score it |
+| How would you stop bad Gold tables being seen? | Build to a staging schema, run the tests, then swap only if they pass |
+| Why not Flink? | The brief allows either, and ksqlDB expresses these rules in SQL. Flink would suit more complex stateful logic |
+
+## Learning it hands-on
+
+Once the stack runs, these experiments will teach you more than rereading will, because you'll see each behaviour happen. Each one tests a claim made in this guide. None has been run yet, so a command may need adjusting.
+
+- [ ] **See an event in Kafka.** In the ksqlDB CLI, run `PRINT 'transactions' FROM BEGINNING LIMIT 3;`. Find the region and the partition.
+- [ ] **Watch fraud alerts arrive.** Run `SELECT * FROM fraud_alerts EMIT CHANGES;` in the ksqlDB CLI. Match each signal to its rule.
+- [ ] **Count what Silver rejected.** Query `observability.silver_runs`, then `observability.quality_results`, and name the faults that were caught.
+- [ ] **Prove idempotency.** Count `silver.transactions`, trigger `historical_backfill`, then count again. Rows already there shouldn't be duplicated.
+- [ ] **Crash the Bronze stream.** Run `docker compose restart spark-bronze-job` and confirm no Kafka offsets are missed, using `_kafka_offset` in Bronze.
+- [ ] **Trip the quality gate.** Temporarily tighten a rule in `quality/expectations/transactions.json`. Confirm the task fails, nothing is written and the next run retries those rows.
+- [ ] **Break a contract.** Remove a required field from a schema in `schemas/avro` and run `docker compose up schema-init`. The registry should refuse it.
+- [ ] **Use time travel.** Query `lake.bronze.transactions` with `TIMESTAMP AS OF` an earlier time, and compare the count.
+- [ ] **Follow one order.** Pick a `transaction_id` and find it in `realtime.transactions`, `silver.transactions` and `gold.fct_orders`.
+- [ ] **Starve Spark on purpose.** Remove `spark.cores.max=2` from the Bronze job and watch the Silver job hang. That recreates part of the original blocker.
+
+The exact commands for common tasks are in [operations.md](operations.md).
