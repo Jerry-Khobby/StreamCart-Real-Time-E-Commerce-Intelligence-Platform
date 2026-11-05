@@ -107,5 +107,4 @@ with DAG(
     fetch_rates = PythonOperator(
         task_id="fetch_and_store_fx_rates",
         python_callable=fetch_and_store_fx_rates,
-        provide_context=True,
     )

@@ -2,7 +2,7 @@
 # STREAMCART DATA PLATFORM - DOCKER COMPOSE
 # ============================================================================
 # Service topology:
-#   Infrastructure: postgres, minio, zookeeper, kafka
+#   Infrastructure: postgres, minio, zookeeper, kafka, schema-registry
 #   Orchestration: airflow (init, webserver, scheduler)
 #   Processing: spark (master, worker, bronze-job)
 #   Data generation: data-generator
@@ -10,7 +10,8 @@
 
 # ── YAML ANCHORS ────────────────────────────────────────────────────────────
 
-x-airflow-build: &airflow-build
+x-platform-image: &platform-image
+  image: streamcart-platform:latest
   build:
     context: .
     dockerfile: Dockerfile
@@ -21,22 +22,14 @@ x-airflow-env: &airflow-env
     # Airflow core
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
-    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+    # Airflow connections used by the DAGs
+    AIRFLOW_CONN_SPARK_DEFAULT: spark://spark-master:7077
+    AIRFLOW_CONN_STREAMCART_POSTGRES: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     # PostgreSQL
     POSTGRES_HOST: postgres
     POSTGRES_PORT: "5432"
-    POSTGRES_USER: ${POSTGRES_USER}
-    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    POSTGRES_DB: ${POSTGRES_DB}
-    # MinIO
-    MINIO_ENDPOINT: minio:9000
-    MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-    MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    MINIO_BUCKET: ${MINIO_BUCKET}
-    # Spark
-    SPARK_MASTER: spark://spark-master:7077
     # dbt
     DBT_PROFILES_DIR: /opt/airflow/dbt
     DBT_TARGET: dev
@@ -48,32 +41,23 @@ x-airflow-volumes: &airflow-volumes
     - ./consumer:/opt/airflow/consumer
     - ./producer:/opt/airflow/producer
     - ./logs:/opt/airflow/logs
-    - ./data:/opt/airflow/data
-    - ./jars:/opt/airflow/jars
 
 x-airflow-common: &airflow-common
-  <<: [*airflow-build, *airflow-env, *airflow-volumes]
+  <<: [*platform-image, *airflow-env, *airflow-volumes]
   networks:
     - streamcart-net
   restart: unless-stopped
 
+# Spark runs from the platform image too, so the driver and executors always
+# agree on Python and Spark versions. The command replaces the Airflow entrypoint.
 x-spark-common: &spark-common
-  image: apache/spark:3.5.0-python3
-  user: root
+  <<: *platform-image
   env_file: .env
-  environment:
-    PYTHONPATH: /opt/airflow
-    DBT_PROFILES_DIR: /opt/airflow/dbt
-    DBT_TARGET: dev
-    MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-    MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    MINIO_BUCKET: ${MINIO_BUCKET}
+  entrypoint: ["/bin/bash", "-c"]
   volumes:
     - ./consumer:/opt/airflow/consumer
     - ./producer:/opt/airflow/producer
-    - ./data:/opt/airflow/data
     - ./logs:/opt/airflow/logs
-    - ./jars:/opt/airflow/jars
   networks:
     - streamcart-net
   restart: unless-stopped
@@ -98,7 +82,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./batch/db/init:/docker-entrypoint-initdb.d:ro
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -109,46 +93,30 @@ services:
       - streamcart-net
     restart: unless-stopped
 
-  # ── MinIO (S3-compatible object storage for data lake) ───────────────────
+  # ── MinIO (S3-compatible object storage for the lakehouse) ───────────────
+  # The official minio/minio images are no longer published on Docker Hub or Quay.
+  # This pinned Bitnami build is the same server, and creates the buckets itself.
   minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1
+    image: bitnamilegacy/minio:2025.7.23
     container_name: streamcart-minio
-    env_file: .env
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    command: server /data --console-address ":9001"
+      MINIO_DEFAULT_BUCKETS: ${MINIO_BUCKET},${MINIO_BUCKET}-archive
     volumes:
-      - minio-data:/data
+      - minio-data:/bitnami/minio/data
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${MINIO_API_HOST_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 10
+      start_period: 15s
     networks:
       - streamcart-net
     restart: unless-stopped
-
-  minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z-cpuv1
-    container_name: streamcart-minio-init
-    env_file: .env
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-        mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
-        mc mb --ignore-existing local/$${MINIO_BUCKET};
-        echo 'MinIO bucket ready.';
-      "
-    networks:
-      - streamcart-net
-    restart: "no"
 
   # ── Zookeeper (Kafka coordination) ───────────────────────────────────────
   zookeeper:
@@ -228,15 +196,9 @@ services:
         condition: service_healthy
     volumes:
       - ./batch/dags:/opt/airflow/dags
-      - ./batch/dbt:/opt/airflow/dbt
-      - ./consumer:/opt/airflow/consumer
-      - ./producer:/opt/airflow/producer
       - ./logs:/opt/airflow/logs
-      - ./data:/opt/airflow/data
-      - ./jars:/opt/airflow/jars
-      - ./.env:/opt/airflow/.env:ro
       - ./wait-for-postgres-and-init.sh:/opt/airflow/wait-for-postgres-and-init.sh:ro
-    entrypoint: ["/bin/bash", "-c"]
+    entrypoint: ["/bin/bash"]
     command: ["/opt/airflow/wait-for-postgres-and-init.sh"]
     restart: "no"
 
@@ -250,7 +212,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "${AIRFLOW_HOST_PORT:-8080}:8080"
     command: webserver
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
@@ -273,7 +235,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "airflow jobs check --job-type SchedulerJob --hostname $(hostname) || exit 1",
+          "airflow jobs check --job-type SchedulerJob --hostname $$(hostname) || exit 1",
         ]
       interval: 30s
       timeout: 10s
@@ -288,20 +250,9 @@ services:
   spark-master:
     <<: *spark-common
     container_name: streamcart-spark-master
-    environment:
-      PYTHONPATH: /opt/airflow
-      DBT_PROFILES_DIR: /opt/airflow/dbt
-      DBT_TARGET: dev
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MINIO_BUCKET: ${MINIO_BUCKET}
-      SPARK_MASTER_HOST: spark-master
-      SPARK_MASTER_PORT: "7077"
-      SPARK_MASTER_WEBUI_PORT: "8080"
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    command: ["spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077 --webui-port 8080"]
     ports:
-      - "7077:7077"
-      - "8081:8080"
+      - "${SPARK_UI_HOST_PORT:-8081}:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080 || exit 1"]
       interval: 15s
@@ -310,6 +261,7 @@ services:
       start_period: 20s
 
   # ── Spark worker (execution node) ─────────────────────────────────────────
+  # 2 cores for the streaming Bronze job + 2 for whichever batch job is running.
   spark-worker:
     <<: *spark-common
     container_name: streamcart-spark-worker
@@ -317,15 +269,8 @@ services:
       spark-master:
         condition: service_healthy
     environment:
-      PYTHONPATH: /opt/airflow
-      DBT_PROFILES_DIR: /opt/airflow/dbt
-      DBT_TARGET: dev
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MINIO_BUCKET: ${MINIO_BUCKET}
-      SPARK_WORKER_CORES: "8"
-      SPARK_WORKER_MEMORY: "8g"
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+      SPARK_WORKER_DIR: /tmp/spark-work
+    command: ["spark-class org.apache.spark.deploy.worker.Worker --cores 4 --memory 3g --webui-port 8081 spark://spark-master:7077"]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8081 || exit 1"]
       interval: 30s
@@ -333,38 +278,31 @@ services:
       retries: 3
       start_period: 30s
 
-  # ── Spark bronze layer (Kafka → MinIO streaming) ─────────────────────────
+  # ── Spark Bronze layer (Kafka → MinIO streaming) ──────────────────────────
   spark-bronze-job:
     <<: *spark-common
     container_name: streamcart-spark-bronze
     depends_on:
-      spark-master:
+      spark-worker:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
-      minio-init:
-        condition: service_completed_successfully
-    environment:
-      PYTHONPATH: /opt/airflow
-      DBT_PROFILES_DIR: /opt/airflow/dbt
-      DBT_TARGET: dev
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MINIO_BUCKET: ${MINIO_BUCKET}
-    command: >
-      /opt/spark/bin/spark-submit
+      minio:
+        condition: service_healthy
+    # Without spark.cores.max a streaming app takes every core and no batch job
+    # can ever start ("Initial job has not accepted any resources").
+    command:
+      - >-
+        spark-submit
         --master spark://spark-master:7077
-        --deploy-mode client
-        --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262
-        --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000
-        --conf spark.hadoop.fs.s3a.access.key=$${MINIO_ROOT_USER}
-        --conf spark.hadoop.fs.s3a.secret.key=$${MINIO_ROOT_PASSWORD}
-        --conf spark.hadoop.fs.s3a.path.style.access=true
-        --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
+        --conf spark.driver.host=spark-bronze-job
+        --conf spark.driver.bindAddress=0.0.0.0
+        --conf spark.driver.memory=1g
+        --conf spark.cores.max=2
+        --conf spark.executor.memory=1g
         --conf spark.sql.shuffle.partitions=4
-        --conf spark.streaming.stopGracefullyOnShutdown=true
         /opt/airflow/consumer/spark_streaming.py
-    restart: on-failure:3
+    restart: on-failure:5
 
   # ══════════════════════════════════════════════════════════════════════════
   # DATA GENERATION LAYER
@@ -372,7 +310,7 @@ services:
 
   # ── Data generator (synthetic event producer) ─────────────────────────────
   data-generator:
-    <<: *airflow-build
+    <<: *platform-image
     container_name: streamcart-data-generator
     depends_on:
       kafka-init:
@@ -383,7 +321,6 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     volumes:
       - ./producer:/opt/airflow/producer:ro
-      - ./data:/opt/airflow/data
       - ./logs:/opt/airflow/logs
     command: python /opt/airflow/producer/data_generator.py --mode all
     networks:

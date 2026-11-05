@@ -23,7 +23,6 @@ def create_spark_session():
         SparkSession.builder
         .appName("StreamCart-Bronze-Layer")
         .config("spark.sql.shuffle.partitions", "4")
-        .config("spark.sql.streaming.checkpointLocation", "/tmp/checkpoints")
         
         # MinIO (S3) configs
         .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
@@ -162,24 +161,24 @@ def main():
 
     tx_df, click_df, inventory_df = process_streams(kafka_df)
 
-    bucket = os.getenv("MINIO_BUCKET", "streamcart")
+    bucket = os.getenv("MINIO_BUCKET", "streamcart-data")
 
     tx_query = write_to_minio(
         tx_df,
         f"s3a://{bucket}/bronze/transactions",
-        "/tmp/checkpoints/transactions"
+        f"s3a://{bucket}/checkpoints/bronze/transactions"
     )
 
     click_query = write_to_minio(
         click_df,
         f"s3a://{bucket}/bronze/clickstream",
-        "/tmp/checkpoints/clickstream"
+        f"s3a://{bucket}/checkpoints/bronze/clickstream"
     )
 
     inventory_query = write_to_minio(
         inventory_df,
         f"s3a://{bucket}/bronze/inventory",
-        "/tmp/checkpoints/inventory"
+        f"s3a://{bucket}/checkpoints/bronze/inventory"
     )
 
     spark.streams.awaitAnyTermination()

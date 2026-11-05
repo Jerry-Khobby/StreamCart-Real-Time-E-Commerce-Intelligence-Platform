@@ -29,16 +29,13 @@ FX_RATES           = {"USD": 1.00, "EUR": 1.09, "JPY": 0.0067, "NGN": 0.00064, "
 
 # ---------------------------------------------------------------------------
 # Spark Session
-# NOTE: postgres jar is added here so executors can use JDBC write
+# Connector jars are baked into the image; resources are set by the DAG.
 # ---------------------------------------------------------------------------
 def create_spark_session() -> SparkSession:
     return (
         SparkSession.builder
         .appName("StreamCart-Silver-Layer")
-        .config("spark.sql.shuffle.partitions", "4")
-        .config("spark.driver.memory",   "2g")
-        .config("spark.executor.memory", "2g")
-        .config("spark.executor.cores",  "2")
+        .config("spark.sql.session.timeZone", "UTC")
 
         # MinIO / S3A
         .config("spark.hadoop.fs.s3a.endpoint",          "http://minio:9000")
@@ -48,13 +45,6 @@ def create_spark_session() -> SparkSession:
         .config("spark.hadoop.fs.s3a.impl",              "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.aws.credentials.provider",
                 "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
-
-        # Packages — hadoop-aws for MinIO, postgresql for JDBC write to Postgres
-        .config("spark.jars.packages",
-                "org.apache.hadoop:hadoop-aws:3.3.4,"
-                "com.amazonaws:aws-java-sdk-bundle:1.12.262,"
-                "org.postgresql:postgresql:42.7.3")
-
         .getOrCreate()
     )
 
