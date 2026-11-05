@@ -24,7 +24,7 @@ The business has three pain points, all caused by siloed, slow data:
 
 **Batch path (hourly and daily).** Spark streams Kafka into Bronze Iceberg tables on MinIO. An hourly Spark job validates and cleans that data into Silver, then publishes it to Postgres, where dbt builds the Gold star schema that Superset reads.
 
-Design decisions and data flows are explained in [docs/architecture.md](docs/architecture.md).
+For a full walkthrough of the project, see the [project guide](docs/project-guide.md). Design decisions and data flows are in [docs/architecture.md](docs/architecture.md).
 
 ## What's in each layer
 
