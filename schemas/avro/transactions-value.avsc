@@ -1,0 +1,26 @@
+{
+  "type": "record",
+  "name": "Transaction",
+  "namespace": "com.streamcart.events",
+  "doc": "One order attempt. Quality-checked fields stay nullable on purpose: bad values must reach Silver, where Great Expectations and the cleaning rules reject and count them.",
+  "fields": [
+    {"name": "event_type", "type": "string"},
+    {"name": "transaction_id", "type": "string"},
+    {"name": "user_id", "type": ["null", "string"], "default": null},
+    {"name": "product_id", "type": "string"},
+    {"name": "category", "type": "string"},
+    {"name": "region", "type": "string", "doc": "The customer's home market."},
+    {"name": "ip_region", "type": "string", "doc": "Market the request came from; differs from region on a geo anomaly."},
+    {"name": "currency", "type": ["null", "string"], "default": null},
+    {"name": "amount_local", "type": ["null", "double"], "default": null},
+    {"name": "amount_usd", "type": ["null", "double"], "default": null},
+    {"name": "quantity", "type": "int"},
+    {"name": "payment_method", "type": "string"},
+    {"name": "status", "type": "string"},
+    {"name": "session_age_seconds", "type": "double", "doc": "Seconds since the customer's session started."},
+    {"name": "timestamp", "type": ["null", "string"], "default": null, "doc": "ISO-8601 UTC event time."},
+    {"name": "is_backfill", "type": "boolean", "default": false, "doc": "Historical seed data: exempt from the 7-day age check, ignored by real-time alerting."},
+    {"name": "_is_fraud", "type": "boolean", "default": false, "doc": "Simulator ground truth, used only to score detection. Dropped in Silver."},
+    {"name": "_fraud_type", "type": ["null", "string"], "default": null}
+  ]
+}
