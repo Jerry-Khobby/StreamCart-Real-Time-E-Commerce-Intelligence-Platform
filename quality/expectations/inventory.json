@@ -1,0 +1,11 @@
+[
+  {"expectation_type": "expect_column_values_to_not_be_null", "kwargs": {"column": "event_id"}},
+  {"expectation_type": "expect_column_values_to_not_be_null", "kwargs": {"column": "product_id"}},
+  {"expectation_type": "expect_column_values_to_not_be_null", "kwargs": {"column": "warehouse_id"}},
+  {"expectation_type": "expect_column_values_to_not_be_null", "kwargs": {"column": "region"}},
+  {"expectation_type": "expect_column_values_to_not_be_null", "kwargs": {"column": "event_time"}},
+  {"expectation_type": "expect_column_values_to_be_in_set", "kwargs": {"column": "update_type", "value_set": ["order_fulfillment", "restock", "damage_writeoff", "audit_adjustment"]}},
+  {"expectation_type": "expect_column_values_to_not_be_in_set", "kwargs": {"column": "quantity_delta", "value_set": [0]}},
+  {"expectation_type": "expect_column_values_to_be_between", "kwargs": {"column": "stock_after", "min_value": 0}},
+  {"expectation_type": "expect_column_values_to_be_between", "kwargs": {"column": "event_age_seconds", "min_value": -300, "max_value": 604800}}
+]
