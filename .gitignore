@@ -72,16 +72,17 @@ superset_home/
 # Grafana
 grafana_data/
 
-#take out jars 
-
-
-jars/
-
+# Local Spark jars (baked into the image at build time)
 jars/
 *.jar
 
+# Generated Airflow config (configured through environment variables instead)
+airflow.cfg
+webserver_config.py
 
+# dbt anonymous usage id
+.user.yml
 
-airflow.cfg 
-webserver_config.py 
-
+# *.json is ignored above; these JSON files are source code
+!dashboards/**/*.json
+!quality/expectations/*.json
