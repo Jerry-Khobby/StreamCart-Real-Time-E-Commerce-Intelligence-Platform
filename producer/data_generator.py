@@ -1,86 +1,60 @@
 """
 StreamCart Data Generator
 =========================
-Produces realistic simulated data for:
-  - Transactions   → Kafka topic: transactions
-  - Clickstream    → Kafka topic: clickstream
-  - Inventory      → Kafka topic: inventory_updates
+Simulates the storefront and warehouses:
+  - Transactions → Kafka topic transactions, plus orders and payments in Postgres (oltp)
+  - Clickstream  → Kafka topic clickstream
+  - Inventory    → Kafka topic inventory_updates
 
-Run standalone (writes JSON to stdout) or with Kafka (set USE_KAFKA=true in .env).
+Events are Avro-encoded against the Schema Registry contracts and sent to the
+partition of their region. With USE_KAFKA=false they print as JSON instead.
 
 Usage:
-    python data_generator.py --mode all       # stream all event types forever
-    python data_generator.py --mode tx        # transactions only
-    python data_generator.py --mode click     # clickstream only
-    python data_generator.py --mode inventory # inventory only
-    python data_generator.py --mode backfill --days 30  # historical backfill
+    python -m producer.data_generator --mode all            # stream everything forever
+    python -m producer.data_generator --mode tx             # transactions only
+    python -m producer.data_generator --mode click          # clickstream only
+    python -m producer.data_generator --mode inventory      # inventory only
+    python -m producer.data_generator --mode backfill --days 14 --tx-per-day 2000
+    python -m producer.data_generator --mode sample         # print examples and exit
 """
 
 import argparse
 import json
 import os
 import random
+import signal
+import threading
 import time
 import uuid
-from pathlib import Path 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-dotenv_path = PROJECT_ROOT / ".env"
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
-from producer.config import (REGION_WEIGHTS,REGIONS,CURRENCIES,
-                             FX_TO_USD,PRODUCT_CATEGORIES,
-                             SEASONAL_WEIGHTS,PRICE_RANGES,
-                             PAGE_TYPES,PAGE_FUNNEL_WEIGHTS,
-                             NUM_PRODUCTS,NUM_USERS,
-                             PRODUCT_IDS,USER_IDS,
-                             FRAUD_USER_POOL,
-                             _SEARCH_TERMS,
-                             _REFERRERS,
-                             _BOT_UAS,
-                             _HUMAN_UAS)
-from kafka.errors import KafkaError,NoBrokersAvailable
+
+from producer.config import (
+    CURRENCIES, DAY_OF_WEEK_WEIGHTS, FRAUD_USER_POOL, FX_TO_USD, PAGE_FUNNEL_WEIGHTS, PRICE_RANGES,
+    PRODUCT_CATEGORIES, PRODUCT_IDS, REGION_PARTITIONS, REGIONS, SEASONAL_WEIGHTS, USER_HOME_REGION,
+    USER_IDS, WAREHOUSES, WAREHOUSES_BY_REGION, _BOT_UAS, _HUMAN_UAS, _REFERRERS, _SEARCH_TERMS,
+)
 from producer.logging_config import setup_logging
-from dotenv import load_dotenv 
 
-load_dotenv(dotenv_path)
+logger = setup_logging("data_generator")
 
-
-logger = setup_logging("data_generator") 
-
-
-# ---------------------------------------------------------------------------
-# Optional Kafka import – gracefully degrades to stdout if not available
-# ---------------------------------------------------------------------------
-try:
-    from kafka import KafkaProducer
-    KAFKA_AVAILABLE = True
-except ImportError:
-    KAFKA_AVAILABLE = False
-
-
-
-# Configuration
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-USE_KAFKA       = os.getenv("USE_KAFKA", "false").lower() == "true"
+SCHEMA_REGISTRY_URL = os.getenv("SCHEMA_REGISTRY_URL", "http://localhost:8081")
+USE_KAFKA = os.getenv("USE_KAFKA", "false").lower() == "true"
+SCHEMA_DIR = Path(os.getenv("SCHEMA_DIR", Path(__file__).resolve().parent.parent / "schemas" / "avro"))
 
+# Share of events deliberately corrupted, so the Silver quality checks have real work to do.
+DIRTY_RATE = float(os.getenv("DIRTY_RATE", "0.01"))
+# Share of clickstream sessions that are bots.
+BOT_RATE = 0.05
 
-print(USE_KAFKA)
-print(KAFKA_BOOTSTRAP)
+shutdown_flag = threading.Event()
 
-
-
-import signal
-
-shutdown_flag = False
 
 def handle_shutdown(signum, frame):
-    global shutdown_flag
     logger.info(f"Received signal {signum}. Shutting down...")
-    shutdown_flag = True
-
-signal.signal(signal.SIGINT, handle_shutdown)
-signal.signal(signal.SIGTERM, handle_shutdown)
-
+    shutdown_flag.set()
 
 
 def now_utc() -> datetime:
@@ -88,19 +62,15 @@ def now_utc() -> datetime:
 
 
 def weighted_choice(weights: dict) -> str:
-    keys   = list(weights.keys())
-    probs  = list(weights.values())
+    keys = list(weights.keys())
+    probs = list(weights.values())
     return random.choices(keys, weights=probs, k=1)[0]
-
-
-def pick_region() -> str:
-    return weighted_choice(REGION_WEIGHTS)
 
 
 def hourly_tx_weight(hour: int) -> float:
     """
     Transaction volume curve across 24 hours.
-    Peak at 10–12 and 19–21 (shopping peaks), trough at 03–05.
+    Peaks at 10–12 and 18–20 (shopping peaks), trough at 03–05.
     """
     curve = [
         0.2, 0.15, 0.12, 0.10, 0.10, 0.15,  # 00–05
@@ -111,387 +81,536 @@ def hourly_tx_weight(hour: int) -> float:
     return curve[hour]
 
 
+def demand_weight(ts: datetime) -> float:
+    """Combined time-of-day and day-of-week demand (weekends dip)."""
+    return hourly_tx_weight(ts.hour) * DAY_OF_WEEK_WEIGHTS[ts.weekday()]
+
+
 def pick_category(month: int) -> str:
     """Pick a product category weighted by seasonal demand for the given month."""
     weights = {cat: SEASONAL_WEIGHTS[cat][month - 1] for cat in PRODUCT_CATEGORIES}
     return weighted_choice(weights)
 
 
-def is_fraud_window(user_id: str, ts: datetime) -> tuple[bool, Optional[str]]:
-    """
-    Returns (is_fraud, fraud_type) for pre-placed fraud patterns.
-    Fraud types:
-      - card_testing   : many small transactions in quick succession
-      - account_takeover: large single transaction from a new session
-      - geo_anomaly    : transaction from unexpected region
-    """
-    if user_id not in FRAUD_USER_POOL:
-        return False, None
-    # Spread fraud across different hours of the day deterministically
-    user_idx  = FRAUD_USER_POOL.index(user_id)
-    fraud_hour = (user_idx * 3) % 24
-    if ts.hour == fraud_hour:
-        fraud_type = ["card_testing", "account_takeover", "geo_anomaly"][user_idx % 3]
-        return True, fraud_type
-    return False, None
+# ---------------------------------------------------------------------------
+# Stock ledger: makes stock_after consistent across orders and restocks
+# ---------------------------------------------------------------------------
+class StockBook:
+    REORDER_POINT = 20
 
+    def __init__(self):
+        self._stock = {}
+        self._lock = threading.Lock()
 
-def generate_product_price(category: str, is_fraud: bool, fraud_type: Optional[str]) -> float:
-    lo, hi = PRICE_RANGES[category]
-    if is_fraud and fraud_type == "card_testing":
-        # Small probing amounts
-        return round(random.uniform(0.99, 9.99), 2)
-    if is_fraud and fraud_type == "account_takeover":
-        # Unusually large amount
-        return round(random.uniform(hi * 0.8, hi * 1.2), 2)
-    return round(random.uniform(lo, hi), 2)
+    def apply(self, product_id: str, warehouse_id: str, delta: int) -> int:
+        with self._lock:
+            key = (product_id, warehouse_id)
+            # Some SKUs start below the reorder point, so alerts fire from the first minutes.
+            current = self._stock.setdefault(key, random.randint(5, 150))
+            self._stock[key] = max(current + delta, 0)
+            return self._stock[key]
+
+    def lowest(self) -> Optional[tuple[str, str]]:
+        """A SKU below its reorder point, if any: what a warehouse would restock first."""
+        with self._lock:
+            low = [key for key, qty in self._stock.items() if qty < self.REORDER_POINT]
+        return random.choice(low) if low else None
 
 
 # ---------------------------------------------------------------------------
 # Event generators
 # ---------------------------------------------------------------------------
-def generate_transaction(ts: Optional[datetime] = None) -> dict:
-    """Generate a single transaction event."""
-    ts        = ts or now_utc()
-    region    = pick_region()
-    currency  = CURRENCIES[region]
-    user_id   = random.choice(USER_IDS)
-    product_id = random.choice(PRODUCT_IDS)
-    category  = pick_category(ts.month)
+def generate_transaction(
+    ts: Optional[datetime] = None,
+    is_backfill: bool = False,
+    user_id: Optional[str] = None,
+    amount_usd: Optional[float] = None,
+    session_age_seconds: Optional[float] = None,
+    ip_region: Optional[str] = None,
+    quantity: Optional[int] = None,
+    fraud_type: Optional[str] = None,
+) -> dict:
+    """Generate one order. Prices are set in USD, then expressed in the market's currency."""
+    ts = ts or now_utc()
+    user_id = user_id or random.choice(USER_IDS)
+    region = USER_HOME_REGION[user_id]
+    currency = CURRENCIES[region]
+    category = pick_category(ts.month)
 
-    is_fraud, fraud_type = is_fraud_window(user_id, ts)
-
-    amount_local = generate_product_price(category, is_fraud, fraud_type)
-    amount_usd   = round(amount_local * FX_TO_USD.get(currency, 1.0), 2)
-    quantity     = 1 if is_fraud and fraud_type == "card_testing" else random.randint(1, 5)
+    if amount_usd is None:
+        low, high = PRICE_RANGES[category]
+        amount_usd = random.uniform(low, high)
+    amount_usd = round(amount_usd, 2)
 
     payment_methods = ["credit_card", "debit_card", "paypal", "crypto", "bank_transfer"]
-    pm_weights      = [0.45, 0.25, 0.15, 0.08, 0.07]
-
+    pm_weights = [0.45, 0.25, 0.15, 0.08, 0.07]
     status_pool = ["completed", "pending", "failed", "refunded"]
-    status_wt   = [0.88, 0.06, 0.04, 0.02]
+    status_wt = [0.88, 0.06, 0.04, 0.02]
 
-    event = {
-        "event_type":       "transaction",
-        "transaction_id":   str(uuid.uuid4()),
-        "user_id":          user_id,
-        "product_id":       product_id,
-        "category":         category,
-        "region":           region,
-        "currency":         currency,
-        "amount_local":     amount_local,
-        "amount_usd":       amount_usd,
-        "quantity":         quantity,
-        "payment_method":   random.choices(payment_methods, weights=pm_weights, k=1)[0],
-        "status":           random.choices(status_pool, weights=status_wt, k=1)[0],
-        "timestamp":        ts.isoformat(),
-        # Fraud metadata – would be stripped in production before landing in Bronze
-        "_is_fraud":        is_fraud,
-        "_fraud_type":      fraud_type,
+    return {
+        "event_type": "transaction",
+        "transaction_id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "product_id": random.choice(PRODUCT_IDS),
+        "category": category,
+        "region": region,
+        "ip_region": ip_region or region,
+        "currency": currency,
+        "amount_local": round(amount_usd / FX_TO_USD[currency], 2),
+        "amount_usd": amount_usd,
+        "quantity": quantity or random.randint(1, 5),
+        "payment_method": random.choices(payment_methods, weights=pm_weights, k=1)[0],
+        "status": random.choices(status_pool, weights=status_wt, k=1)[0],
+        "session_age_seconds": round(session_age_seconds if session_age_seconds is not None
+                                     else random.uniform(60, 1800), 1),
+        "timestamp": ts.isoformat(),
+        "is_backfill": is_backfill,
+        # Ground truth for scoring detection; dropped in Silver.
+        "_is_fraud": fraud_type is not None,
+        "_fraud_type": fraud_type,
     }
+
+
+def generate_fraud_scenario(ts: Optional[datetime] = None, is_backfill: bool = False) -> list[dict]:
+    """
+    A pre-placed fraud window, using the patterns the real-time layer must catch:
+      card_testing      a burst of small charges from one user → VELOCITY_BREACH
+      account_takeover  a very large order moments after login → HIGH_VALUE_NEW_SESSION
+      geo_anomaly       an order from outside the user's market → GEO_ANOMALY
+    """
+    ts = ts or now_utc()
+    user_id = random.choice(FRAUD_USER_POOL)
+    scenario = random.choice(["card_testing", "account_takeover", "geo_anomaly"])
+
+    if scenario == "card_testing":
+        return [
+            generate_transaction(
+                ts - timedelta(seconds=i * random.uniform(2, 10)), is_backfill, user_id,
+                amount_usd=random.uniform(0.99, 9.99), quantity=1, fraud_type=scenario,
+            )
+            for i in range(random.randint(12, 18))
+        ]
+    if scenario == "account_takeover":
+        return [generate_transaction(
+            ts, is_backfill, user_id, amount_usd=random.uniform(5001, 15000),
+            session_age_seconds=random.uniform(3, 55), fraud_type=scenario,
+        )]
+    foreign = random.choice([r for r in REGIONS if r != USER_HOME_REGION[user_id]])
+    return [generate_transaction(ts, is_backfill, user_id, ip_region=foreign, fraud_type=scenario)]
+
+
+def corrupt_transaction(event: dict) -> dict:
+    """Inject one realistic data fault. Silver has to catch every one of these."""
+    fault = random.choice([
+        "null_user", "unknown_user", "negative_amount", "huge_amount",
+        "bad_currency", "future_event", "stale_event", "null_timestamp",
+    ])
+    event = dict(event)
+    if fault == "null_user":
+        event["user_id"] = None
+    elif fault == "unknown_user":
+        event["user_id"] = "USER-9999999"
+    elif fault == "negative_amount":
+        event["amount_usd"] = -abs(event["amount_usd"])
+    elif fault == "huge_amount":
+        event["amount_usd"] = 999_999.0
+    elif fault == "bad_currency":
+        event["currency"] = "XXX"
+    elif fault == "future_event":
+        event["timestamp"] = (now_utc() + timedelta(days=2)).isoformat()
+    elif fault == "stale_event":
+        event["timestamp"] = (now_utc() - timedelta(days=10)).isoformat()
+    else:
+        event["timestamp"] = None
     return event
 
 
-def generate_session(ts: Optional[datetime] = None, max_events: int = 15) -> list[dict]:
+def generate_session(ts: Optional[datetime] = None, is_backfill: bool = False, max_events: int = 15) -> list[dict]:
     """
-    Generate a sequence of clickstream events for one user session.
-    Simulates a realistic funnel traversal with occasional bot traffic.
+    Generate the clickstream events of one session, ending at `ts`.
+
+    Bots carry no label. Half announce themselves in their user agent; the other half
+    spoof a browser, and can only be caught by their request rate.
     """
-    ts       = ts or now_utc()
-    user_id  = random.choice(USER_IDS)
+    ts = ts or now_utc()
+    user_id = random.choice(USER_IDS)
     session_id = str(uuid.uuid4())
-    region   = pick_region()
-    is_bot   = random.random() < 0.05  # 5% bot traffic
+    region = USER_HOME_REGION[user_id]
+    is_bot = random.random() < BOT_RATE
+    spoofed = is_bot and random.random() < 0.5
+    user_agent = random.choice(_HUMAN_UAS) if (not is_bot or spoofed) else random.choice(_BOT_UAS)
+    num_events = random.randint(6, 20) if is_bot else random.randint(3, max_events)
 
-    events   = []
-    page     = "home"
-    event_ts = ts
+    pages, offsets = [], []
+    page, offset = "home", 0.0
+    for _ in range(num_events):
+        pages.append(page)
+        offsets.append(offset)
+        offset += random.uniform(0.1, 2) if is_bot else random.uniform(5, 300)
 
-    # Bots hammer the same page rapidly; humans browse normally
-    num_events = random.randint(2, 4) if is_bot else random.randint(3, max_events)
-
-    for i in range(num_events):
-        product_id = random.choice(PRODUCT_IDS) if page == "product" else None
-        search_query = _random_search_query() if page == "search" else None
-
-        event = {
-            "event_type":    "clickstream",
-            "event_id":      str(uuid.uuid4()),
-            "session_id":    session_id,
-            "user_id":       user_id,
-            "region":        region,
-            "page_type":     page,
-            "product_id":    product_id,
-            "search_query":  search_query,
-            "referrer":      _random_referrer() if i == 0 else None,
-            "user_agent":    _bot_ua() if is_bot else _human_ua(),
-            "timestamp":     event_ts.isoformat(),
-            "_is_bot":       is_bot,
-            "_session_age_s": (event_ts - ts).total_seconds(),
-        }
-        events.append(event)
-
-        # Advance time within session
-        if is_bot:
-            event_ts += timedelta(seconds=random.uniform(0.1, 2))
-        else:
-            event_ts += timedelta(seconds=random.uniform(5, 300))
-
-        # Pick next page according to funnel weights; stop if no onward path
         next_page_weights = PAGE_FUNNEL_WEIGHTS.get(page, {})
         if not next_page_weights:
             break
         page = weighted_choice(next_page_weights)
-
-        # Checkout abandonment: 40% chance of stopping at cart
-        if page == "cart" and random.random() < 0.4:
+        # Checkout abandonment: 40% of sessions stop at the cart.
+        if page == "cart" and not is_bot and random.random() < 0.4:
+            pages.append(page)
+            offsets.append(offset)
             break
 
-    return events
+    # A session that finishes "now" started earlier, so no event is in the future.
+    start = ts - timedelta(seconds=offsets[-1])
+    return [
+        {
+            "event_type": "clickstream",
+            "event_id": str(uuid.uuid4()),
+            "session_id": session_id,
+            "user_id": user_id,
+            "region": region,
+            "page_type": page_type,
+            "product_id": random.choice(PRODUCT_IDS) if page_type == "product" else None,
+            "search_query": _random_search_query() if page_type == "search" else None,
+            "referrer": random.choice(_REFERRERS) if i == 0 else None,
+            "user_agent": user_agent,
+            "timestamp": (start + timedelta(seconds=offsets[i])).isoformat(),
+            "is_backfill": is_backfill,
+        }
+        for i, page_type in enumerate(pages)
+    ]
 
 
-def generate_inventory_update(ts: Optional[datetime] = None) -> dict:
-    """Generate a single inventory update event."""
+def generate_inventory_update(
+    stock: StockBook,
+    ts: Optional[datetime] = None,
+    is_backfill: bool = False,
+    update_type: Optional[str] = None,
+    product_id: Optional[str] = None,
+    warehouse_id: Optional[str] = None,
+    delta: Optional[int] = None,
+) -> dict:
+    """Generate one stock movement. Called with no overrides, it picks a non-order movement."""
     ts = ts or now_utc()
+    if update_type is None:
+        update_type = random.choices(["restock", "damage_writeoff", "audit_adjustment"], weights=[0.7, 0.2, 0.1], k=1)[0]
+    if update_type == "restock" and product_id is None:
+        low = stock.lowest()
+        if low:
+            product_id, warehouse_id = low
+    product_id = product_id or random.choice(PRODUCT_IDS)
+    warehouse_id = warehouse_id or random.choice(list(WAREHOUSES))
 
-    event_types = ["order_fulfillment", "restock", "damage_writeoff", "audit_adjustment"]
-    et_weights  = [0.70, 0.20, 0.06, 0.04]
-    event_type  = random.choices(event_types, weights=et_weights, k=1)[0]
-
-    product_id  = random.choice(PRODUCT_IDS)
-    warehouses  = ["WH-US-EAST", "WH-US-WEST", "WH-EU-CENTRAL", "WH-ASIA-SING", "WH-AF-LAGOS"]
-
-    if event_type == "order_fulfillment":
-        delta = -random.randint(1, 10)
-    elif event_type == "restock":
-        delta = random.randint(50, 500)
-    elif event_type == "damage_writeoff":
-        delta = -random.randint(1, 30)
-    else:
-        delta = random.randint(-20, 20)
+    if delta is None:
+        if update_type == "restock":
+            delta = random.randint(50, 500)
+        elif update_type == "damage_writeoff":
+            delta = -random.randint(1, 30)
+        else:
+            delta = random.choice([d for d in range(-20, 21) if d != 0])
 
     return {
-        "event_type":    "inventory_update",
-        "event_id":      str(uuid.uuid4()),
-        "product_id":    product_id,
-        "warehouse_id":  random.choice(warehouses),
-        "region":        random.choice(REGIONS),
-        "update_type":   event_type,
+        "event_type": "inventory_update",
+        "event_id": str(uuid.uuid4()),
+        "product_id": product_id,
+        "warehouse_id": warehouse_id,
+        "region": WAREHOUSES[warehouse_id],
+        "update_type": update_type,
         "quantity_delta": delta,
-        "timestamp":     ts.isoformat(),
+        "stock_after": stock.apply(product_id, warehouse_id, delta),
+        "reorder_point": StockBook.REORDER_POINT,
+        "timestamp": ts.isoformat(),
+        "is_backfill": is_backfill,
     }
 
 
+def fulfil_order(stock: StockBook, tx: dict, ts: datetime, is_backfill: bool = False) -> Optional[dict]:
+    """Orders reduce stock at a warehouse in the customer's market. Failed orders ship nothing."""
+    if tx["status"] == "failed":
+        return None
+    return generate_inventory_update(
+        stock, ts, is_backfill, update_type="order_fulfillment", product_id=tx["product_id"],
+        warehouse_id=random.choice(WAREHOUSES_BY_REGION[tx["region"]]), delta=-tx["quantity"],
+    )
 
-# Private helpers
+
 def _random_search_query() -> str:
-    terms = random.sample(_SEARCH_TERMS, k=random.randint(1, 3))
-    return " ".join(terms)
+    return " ".join(random.sample(_SEARCH_TERMS, k=random.randint(1, 3)))
 
 
-def _random_referrer() -> str:
-    return random.choice(_REFERRERS)
+# ---------------------------------------------------------------------------
+# Sinks
+# ---------------------------------------------------------------------------
+class EventPublisher:
+    """Avro producer that enforces the registered contracts and routes by region."""
+
+    TOPICS = {"transactions", "clickstream", "inventory_updates"}
+
+    def __init__(self):
+        # Imported here so --mode sample and the unit tests need no Kafka client.
+        from confluent_kafka import Producer
+        from confluent_kafka.schema_registry import SchemaRegistryClient
+        from confluent_kafka.schema_registry.avro import AvroSerializer
+        from confluent_kafka.serialization import MessageField, SerializationContext
+
+        self._context = lambda topic: SerializationContext(topic, MessageField.VALUE)
+        registry = SchemaRegistryClient({"url": SCHEMA_REGISTRY_URL})
+        # auto.register=False is what makes the registry a contract: a producer whose
+        # event doesn't fit the registered schema fails instead of changing the schema.
+        conf = {"auto.register.schemas": False, "use.latest.version": True}
+        self._serializers = {
+            topic: AvroSerializer(registry, (SCHEMA_DIR / f"{topic}-value.avsc").read_text(), conf=conf)
+            for topic in self.TOPICS
+        }
+        self._producer = Producer({
+            "bootstrap.servers": KAFKA_BOOTSTRAP,
+            "acks": "all",
+            "enable.idempotence": True,
+            "linger.ms": 50,
+        })
+        logger.info(f"Publishing Avro events to {KAFKA_BOOTSTRAP}")
+
+    def send(self, topic: str, event: dict):
+        value = self._serializers[topic](event, self._context(topic))
+        while True:
+            try:
+                self._producer.produce(
+                    topic, key=event["region"], value=value,
+                    partition=REGION_PARTITIONS[event["region"]],
+                    on_delivery=self._on_delivery,
+                )
+                break
+            except BufferError:
+                self._producer.poll(1)
+        self._producer.poll(0)
+
+    @staticmethod
+    def _on_delivery(err, msg):
+        if err:
+            logger.error(f"Delivery to {msg.topic()} failed: {err}")
+
+    def flush(self):
+        self._producer.flush(30)
 
 
-def _bot_ua() -> str:
-    return random.choice(_BOT_UAS)
+class StdoutPublisher:
+    def send(self, topic: str, event: dict):
+        print(json.dumps({"topic": topic, **event}))
 
-def _human_ua() -> str:
-    return random.choice(_HUMAN_UAS)
+    def flush(self):
+        pass
 
 
-# Kafka producer
-def build_producer(retries: int = 5, delay: int = 5):
-    if not KAFKA_AVAILABLE:
-        logger.warning("kafka-python not installed. Falling back to stdout.")
-        return None
+class OltpWriter:
+    """
+    Writes orders and payments to the transactional database, the way a storefront would.
+    Only well-formed orders land here: the system of record doesn't contain the
+    corrupted events injected into the event stream.
+    """
 
+    def __init__(self, batch_size: int = 50):
+        import psycopg2
+        from psycopg2.extras import execute_values
+
+        self._execute_values = execute_values
+        self._conn = psycopg2.connect(
+            host=os.getenv("POSTGRES_HOST", "postgres"),
+            port=os.getenv("POSTGRES_PORT", "5432"),
+            dbname=os.environ["POSTGRES_DB"],
+            user=os.environ["POSTGRES_USER"],
+            password=os.environ["POSTGRES_PASSWORD"],
+        )
+        self._batch_size = batch_size
+        self._orders, self._payments = [], []
+        self._lock = threading.Lock()
+
+    def record(self, tx: dict):
+        with self._lock:
+            self._orders.append((tx["transaction_id"], tx["user_id"], tx["product_id"], tx["region"],
+                                 tx["quantity"], tx["status"], tx["timestamp"]))
+            self._payments.append((str(uuid.uuid4()), tx["transaction_id"], tx["payment_method"],
+                                   tx["currency"], tx["amount_local"], tx["timestamp"]))
+            if len(self._orders) >= self._batch_size:
+                self._flush_locked()
+
+    def flush(self):
+        with self._lock:
+            self._flush_locked()
+
+    def _flush_locked(self):
+        if not self._orders:
+            return
+        with self._conn.cursor() as cur:
+            self._execute_values(cur, """
+                INSERT INTO oltp.orders (order_id, user_id, product_id, region, quantity, status, created_at)
+                VALUES %s ON CONFLICT DO NOTHING""", self._orders)
+            self._execute_values(cur, """
+                INSERT INTO oltp.payments (payment_id, order_id, method, currency, amount_local, created_at)
+                VALUES %s ON CONFLICT DO NOTHING""", self._payments)
+        self._conn.commit()
+        self._orders, self._payments = [], []
+
+    def has_history(self) -> bool:
+        """True if orders older than a day exist, meaning the seed has already run."""
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT EXISTS (SELECT 1 FROM oltp.orders WHERE created_at < now() - interval '1 day')")
+            return cur.fetchone()[0]
+
+
+def build_publisher(retries: int = 12, delay: int = 5):
     if not USE_KAFKA:
-        logger.info("USE_KAFKA is false. Using stdout.")
-        return None
-
+        logger.info("USE_KAFKA is false. Printing events to stdout.")
+        return StdoutPublisher()
     for attempt in range(retries):
         try:
-            producer = KafkaProducer(
-                bootstrap_servers=KAFKA_BOOTSTRAP,
-                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                acks="all",
-                retries=3,
-            )
-            logger.info("Connected to Kafka")
-            return producer
-
-        except NoBrokersAvailable:
-            logger.warning(f"Kafka not available (attempt {attempt+1}/{retries})")
+            return EventPublisher()
+        except Exception as exc:
+            logger.warning(f"Kafka/registry not ready (attempt {attempt + 1}/{retries}): {exc}")
             time.sleep(delay)
-
-    logger.error("Failed to connect to Kafka after retries")
-    return None
+    raise SystemExit("Could not connect to Kafka and the Schema Registry")
 
 
-def emit(producer, topic: str, event: dict, retries: int = 3):
-    if not producer:
-        print(json.dumps(event))
+def emit_transaction(publisher, oltp, stock, tx: dict, ts: datetime, is_backfill: bool = False):
+    """Publish an order, record it in the OLTP database and ship it from a warehouse."""
+    dirty = not is_backfill and random.random() < DIRTY_RATE
+    publisher.send("transactions", corrupt_transaction(tx) if dirty else tx)
+    # A retried message: Silver's deduplication has to collapse it.
+    if not is_backfill and random.random() < DIRTY_RATE:
+        publisher.send("transactions", tx)
+    if oltp:
+        oltp.record(tx)
+    update = fulfil_order(stock, tx, ts, is_backfill)
+    if update:
+        publisher.send("inventory_updates", update)
+
+
+# ---------------------------------------------------------------------------
+# Stream modes
+# ---------------------------------------------------------------------------
+def stream_transactions(publisher, oltp, stock, tx_per_second: float):
+    logger.info(f"[transactions] Streaming at up to {tx_per_second} tx/s")
+    while not shutdown_flag.is_set():
+        ts = now_utc()
+        emit_transaction(publisher, oltp, stock, generate_transaction(ts), ts)
+        shutdown_flag.wait(1.0 / (tx_per_second * demand_weight(ts)))
+
+
+def stream_fraud(publisher, oltp, stock, per_hour: float = 20.0):
+    logger.info(f"[fraud] Injecting about {per_hour} fraud scenarios/hour")
+    while not shutdown_flag.wait(random.expovariate(per_hour / 3600)):
+        ts = now_utc()
+        for tx in generate_fraud_scenario(ts):
+            emit_transaction(publisher, oltp, stock, tx, ts)
+
+
+def stream_clickstream(publisher, sessions_per_minute: float = 20.0):
+    logger.info(f"[clickstream] Streaming about {sessions_per_minute} sessions/min")
+    while not shutdown_flag.is_set():
+        for event in generate_session():
+            publisher.send("clickstream", event)
+        shutdown_flag.wait(60.0 / sessions_per_minute)
+
+
+def stream_inventory(publisher, stock, updates_per_minute: float = 10.0):
+    logger.info(f"[inventory] Streaming about {updates_per_minute} non-order updates/min")
+    while not shutdown_flag.is_set():
+        publisher.send("inventory_updates", generate_inventory_update(stock))
+        shutdown_flag.wait(60.0 / updates_per_minute)
+
+
+def backfill(publisher, oltp, stock, days: int = 14, tx_per_day: int = 2000):
+    """Seed history, so batch dashboards have trends on first start. Runs once."""
+    if oltp and oltp.has_history():
+        logger.info("[backfill] History already exists. Nothing to do.")
         return
 
-    for attempt in range(retries):
-        try:
-            future = producer.send(topic, value=event)
-            future.get(timeout=10)  # wait for confirmation
-            return
+    logger.info(f"[backfill] Seeding {days} days at about {tx_per_day:,} orders/day")
+    end = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+    hours = range(24)
+    hour_weights = [hourly_tx_weight(h) for h in hours]
 
-        except KafkaError as e:
-            logger.warning(f"Send failed (attempt {attempt+1}): {e}")
-            time.sleep(2 ** attempt)  # exponential backoff
+    def random_moment(day: datetime) -> datetime:
+        hour = random.choices(hours, weights=hour_weights, k=1)[0]
+        return day + timedelta(hours=hour, seconds=random.randint(0, 3599))
 
-    logger.error("Failed to send message after retries")
-
-
-
-# Stream modes
-def stream_transactions(producer, tx_per_second: float = 5.0):
-    interval = 1.0 / tx_per_second
-    print(f"[transactions] Streaming at ~{tx_per_second} tx/s → topic: transactions")
-    while not shutdown_flag:
-        ts    = now_utc()
-        hour  = ts.hour
-        weight = hourly_tx_weight(hour)
-        # Scale actual sleep to simulate volume variation
-        sleep_time = interval / weight
-        tx = generate_transaction(ts)
-        emit(producer, "transactions", tx)
-        time.sleep(sleep_time)
-
-
-def stream_clickstream(producer, sessions_per_minute: float = 20.0):
-    interval = 60.0 / sessions_per_minute
-    print(f"[clickstream] Streaming at ~{sessions_per_minute} sessions/min → topic: clickstream")
-    while True:
-        ts     = now_utc()
-        events = generate_session(ts)
-        for ev in events:
-            emit(producer, "clickstream", ev)
-        time.sleep(interval)
-
-
-def stream_inventory(producer, updates_per_minute: float = 10.0):
-    interval = 60.0 / updates_per_minute
-    logger.info(f"[inventory] Streaming at ~{updates_per_minute} updates/min → topic: inventory_updates")
-    while True:
-        ev = generate_inventory_update()
-        emit(producer, "inventory_updates", ev)
-        time.sleep(interval)
-
-
-
-# Backfill mode
-def backfill(producer, days: int = 30, tx_per_day: int = 50_000):
-    """
-    Generate historical data for the past N days.
-    Useful for populating Bronze layer from scratch.
-    """
-    logger.info(f"[backfill] Generating {tx_per_day:,} tx/day × {days} days = {tx_per_day * days:,} total events")
-    end   = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    start = end - timedelta(days=days)
     total = 0
+    for offset in range(days, 0, -1):
+        day = end - timedelta(days=offset)
+        orders = int(tx_per_day * DAY_OF_WEEK_WEIGHTS[day.weekday()])
 
-    current_day = start
-    while current_day < end:
-        for _ in range(tx_per_day):
-            # Distribute events across the day with hourly weights
-            hour   = random.choices(range(24), weights=[hourly_tx_weight(h) for h in range(24)], k=1)[0]
-            minute = random.randint(0, 59)
-            second = random.randint(0, 59)
-            ts     = current_day.replace(hour=hour, minute=minute, second=second)
-            tx     = generate_transaction(ts)
-            emit(producer, "transactions", tx, verbose=False)
-            total += 1
+        for _ in range(orders):
+            ts = random_moment(day)
+            emit_transaction(publisher, oltp, stock, generate_transaction(ts, True), ts, True)
+        for _ in range(5):
+            ts = random_moment(day)
+            for tx in generate_fraud_scenario(ts, True):
+                emit_transaction(publisher, oltp, stock, tx, ts, True)
+        for _ in range(orders // 2):
+            for event in generate_session(random_moment(day), True):
+                publisher.send("clickstream", event)
+        for _ in range(orders // 10):
+            publisher.send("inventory_updates", generate_inventory_update(stock, random_moment(day), True))
 
-        # Also generate a day's worth of inventory snapshots
-        for _ in range(int(tx_per_day * 0.02)):
-            ts  = current_day + timedelta(hours=random.uniform(0, 24))
-            ev  = generate_inventory_update(ts)
-            emit(producer, "inventory_updates", ev, verbose=False)
-            total += 1
-
-        logger.info(f"  ✓ {current_day.date()} — cumulative events: {total:,}")
-        current_day += timedelta(days=1)
-
-    logger.info(f"[backfill] Done. Total events emitted: {total:,}")
-
+        total += orders
+        publisher.flush()
+        if oltp:
+            oltp.flush()
+        logger.info(f"[backfill] {day.date()} done, {total:,} orders so far")
+    logger.info("[backfill] Complete")
 
 
-# Entry point
 def main():
     parser = argparse.ArgumentParser(description="StreamCart data generator")
-    parser.add_argument(
-        "--mode",
-        choices=["all", "tx", "click", "inventory", "backfill", "sample"],
-        default="sample",
-        help="Generation mode",
-    )
-    parser.add_argument("--days",    type=int,   default=30,   help="Days for backfill mode")
-    parser.add_argument("--tx-rate", type=float, default=5.0,  help="Transactions per second (stream modes)")
-    parser.add_argument("--quiet",   action="store_true",       help="Suppress stdout in backfill mode")
+    parser.add_argument("--mode", choices=["all", "tx", "click", "inventory", "backfill", "sample"], default="sample")
+    parser.add_argument("--days", type=int, default=14, help="Days of history for backfill mode")
+    parser.add_argument("--tx-per-day", type=int, default=2000, help="Orders per day for backfill mode")
+    # At the default of 1.0 the demand curves average about 0.6 tx/s: over 50,000 orders a day.
+    parser.add_argument("--tx-rate", type=float, default=1.0, help="Peak transactions per second (stream modes)")
     args = parser.parse_args()
 
-    producer = build_producer()
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    stock = StockBook()
 
     if args.mode == "sample":
-        # Print a few sample events of each type and exit
-        logger.info("=== Sample Transaction ===")
-        logger.info(json.dumps(generate_transaction(), indent=2))
-        logger.info("\n=== Sample Clickstream Session (first event) ===")
-        session = generate_session()
-        logger.info(json.dumps(session[0], indent=2))
-        logger.info(f"  ... ({len(session)} events in session)")
-        logger.info("\n=== Sample Inventory Update ===")
-        logger.info(json.dumps(generate_inventory_update(), indent=2))
+        print(json.dumps(generate_transaction(), indent=2))
+        print(json.dumps(generate_session()[0], indent=2))
+        print(json.dumps(generate_inventory_update(stock), indent=2))
         return
+
+    publisher = build_publisher()
+    oltp = OltpWriter() if USE_KAFKA else None
 
     if args.mode == "backfill":
-        backfill(producer, days=args.days)
+        backfill(publisher, oltp, stock, days=args.days, tx_per_day=args.tx_per_day)
+        publisher.flush()
         return
 
-    # Streaming modes – run concurrently using threads
-    import threading
-
-    threads = []
-
+    jobs = []
     if args.mode in ("all", "tx"):
-        threads.append(threading.Thread(
-            target=stream_transactions,
-            args=(producer, args.tx_rate),
-            daemon=True,
-        ))
-
+        jobs.append((stream_transactions, (publisher, oltp, stock, args.tx_rate)))
+        jobs.append((stream_fraud, (publisher, oltp, stock)))
     if args.mode in ("all", "click"):
-        threads.append(threading.Thread(
-            target=stream_clickstream,
-            args=(producer,),
-            daemon=True,
-        ))
-
+        jobs.append((stream_clickstream, (publisher,)))
     if args.mode in ("all", "inventory"):
-        threads.append(threading.Thread(
-            target=stream_inventory,
-            args=(producer,),
-            daemon=True,
-        ))
+        jobs.append((stream_inventory, (publisher, stock)))
 
-    for t in threads:
-        t.start()
+    threads = [threading.Thread(target=target, args=job_args, daemon=True) for target, job_args in jobs]
+    for thread in threads:
+        thread.start()
 
     logger.info("Generator running. Press Ctrl+C to stop.")
-    try:
-        while not shutdown_flag:
-            time.sleep(1)
-    finally:
-        logger.info("Flushing producer...")
-        if producer:
-            producer.flush()
-            producer.close()
-        logger.info("Shutdown complete.")
+    # The OLTP buffer flushes on size or here, whichever comes first.
+    while not shutdown_flag.wait(5):
+        if not all(thread.is_alive() for thread in threads):
+            raise SystemExit("A generator thread died; exiting so the container restarts")
+        if oltp:
+            oltp.flush()
+
+    for thread in threads:
+        thread.join(timeout=5)
+    publisher.flush()
+    if oltp:
+        oltp.flush()
+    logger.info("Shutdown complete.")
 
 
 if __name__ == "__main__":

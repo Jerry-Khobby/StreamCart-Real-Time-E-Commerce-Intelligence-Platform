@@ -2,11 +2,6 @@
 -- Standard date dimension spanning 5 years (2023-01-01 → 2027-12-31).
 -- Generated entirely in SQL — no seed file needed.
 
-
-
-
-
-
 with date_spine as (
     {{ dbt_utils.date_spine(
         datepart = "day",

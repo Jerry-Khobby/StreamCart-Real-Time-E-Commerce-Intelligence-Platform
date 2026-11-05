@@ -1,0 +1,20 @@
+{
+  "type": "record",
+  "name": "ClickstreamEvent",
+  "namespace": "com.streamcart.events",
+  "doc": "One page interaction. Bots are mixed in and carry no label: Silver has to detect them.",
+  "fields": [
+    {"name": "event_type", "type": "string"},
+    {"name": "event_id", "type": "string"},
+    {"name": "session_id", "type": "string", "doc": "Client-side session id. Silver derives its own stitched id."},
+    {"name": "user_id", "type": ["null", "string"], "default": null},
+    {"name": "region", "type": "string"},
+    {"name": "page_type", "type": "string"},
+    {"name": "product_id", "type": ["null", "string"], "default": null},
+    {"name": "search_query", "type": ["null", "string"], "default": null},
+    {"name": "referrer", "type": ["null", "string"], "default": null},
+    {"name": "user_agent", "type": "string"},
+    {"name": "timestamp", "type": ["null", "string"], "default": null},
+    {"name": "is_backfill", "type": "boolean", "default": false}
+  ]
+}

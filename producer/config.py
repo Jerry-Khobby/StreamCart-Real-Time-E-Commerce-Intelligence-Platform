@@ -10,6 +10,10 @@ REGION_WEIGHTS = {
 }
 REGIONS = ["US", "EU", "Asia", "Africa", "LatAm"]
 
+# Each region has its own Kafka partition, for parallel per-market consumption.
+# (Hashing the key could map two of the five regions to one partition.)
+REGION_PARTITIONS = {region: index for index, region in enumerate(REGIONS)}
+
 CURRENCIES = {
     "US":     "USD",
     "EU":     "EUR",
@@ -24,6 +28,23 @@ FX_TO_USD = {
     "JPY": 0.0067,
     "NGN": 0.00064,
     "BRL": 0.20,
+}
+
+# Monday to Sunday: demand dips at the weekend
+DAY_OF_WEEK_WEIGHTS = [1.0, 1.0, 1.0, 1.0, 1.05, 0.75, 0.7]
+
+# Warehouse → the market it serves
+WAREHOUSES = {
+    "WH-US-EAST": "US",
+    "WH-US-WEST": "US",
+    "WH-EU-CENTRAL": "EU",
+    "WH-ASIA-SING": "Asia",
+    "WH-AF-LAGOS": "Africa",
+    "WH-LATAM-SP": "LatAm",
+}
+WAREHOUSES_BY_REGION = {
+    region: [wh for wh, wh_region in WAREHOUSES.items() if wh_region == region]
+    for region in REGIONS
 }
 
 PRODUCT_CATEGORIES = [
@@ -101,9 +122,18 @@ PRODUCT_IDS = [f"PROD-{i:05d}" for i in range(1, NUM_PRODUCTS + 1)]
 USER_IDS    = [f"USER-{i:07d}" for i in range(1, NUM_USERS + 1)]
 
 
-# Fraud windows – these users will exhibit fraud patterns during specific hours
-random.seed(42)
-FRAUD_USER_POOL = random.sample(USER_IDS, min(50, NUM_USERS))
+# A private generator keeps these stable between runs without reseeding the global
+# one, which would make every restart replay the same stream of events.
+_stable_random = random.Random(42)
+
+# Each customer belongs to one market, so a mismatch with ip_region means something.
+USER_HOME_REGION = dict(zip(
+    USER_IDS,
+    _stable_random.choices(REGIONS, weights=[REGION_WEIGHTS[r] for r in REGIONS], k=NUM_USERS),
+))
+
+# The accounts that fraud scenarios strike
+FRAUD_USER_POOL = _stable_random.sample(USER_IDS, min(50, NUM_USERS))
 
 _SEARCH_TERMS = [
     "laptop", "running shoes", "coffee maker", "bluetooth headphones",
@@ -140,7 +170,3 @@ _HUMAN_UAS = [
 LOG_DIR = os.getenv("LOG_DIR", "/opt/airflow/logs")
 LOG_FILE = os.getenv("LOG_FILE", "streamcart.log")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-
-
-KAFKA_BROKER: str = os.getenv("KAFKA_BROKER", "kafka:9092")
-KAFKA_TOPIC: str = os.getenv("KAFKA_TOPIC", "streamcarts")

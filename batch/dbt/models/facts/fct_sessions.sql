@@ -1,10 +1,8 @@
 -- models/facts/fct_sessions.sql
 -- Grain: one row per user session.
 -- Aggregates raw clickstream events into session-level metrics.
-
-
-
-
+-- Incremental: re-merges a 1-day window so sessions still in progress at the last
+-- run are recomputed with their later events.
 
 {{
     config(
@@ -19,15 +17,15 @@ with events as (
     select * from {{ ref('stg_clickstream') }}
 
     {% if is_incremental() %}
-        where occurred_at > (select max(session_end_at) from {{ this }})
+        where occurred_at >= (select max(session_end_at) - interval '1 day' from {{ this }})
     {% endif %}
 ),
 
 session_agg as (
     select
-            session_id,
-            min(user_id) as user_id,
-            min(region) as region,
+        session_id,
+        min(user_id)                                as user_id,
+        min(region)                                 as region,
 
         min(occurred_at)                            as session_start_at,
         max(occurred_at)                            as session_end_at,

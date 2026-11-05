@@ -1,13 +1,6 @@
 -- models/facts/fct_orders.sql
 -- Grain: one row per order.
--- Incremental: appends new orders since last run using occurred_at.
-
-
-
-
-
-
-
+-- Incremental: re-merges a 3-day window, which picks up late arrivals and status changes.
 
 {{
     config(
@@ -22,8 +15,7 @@ with transactions as (
     select * from {{ ref('stg_transactions') }}
 
     {% if is_incremental() %}
-        -- Only pick up rows newer than the latest record already in the table
-        where occurred_at > (select max(occurred_at) from {{ this }})
+        where occurred_at >= (select max(occurred_at) - interval '3 days' from {{ this }})
     {% endif %}
 ),
 
@@ -33,13 +25,16 @@ joined as (
         t.user_id,
         t.product_id,
         t.region,
+        t.ip_region,
+        t.session_age_seconds,
         t.product_category,
         t.order_status,
         t.payment_method,
         t.currency,
         t.amount_local,
         t.amount_usd,
-        t.amount_usd_normalised,
+        t.amount_usd_reported,
+        t.fx_rate_used,
         t.quantity,
         t.occurred_at,
         t.event_date,

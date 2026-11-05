@@ -1,13 +1,7 @@
 -- models/aggregates/agg_fraud_summary.sql
 -- Grain: one row per region per day.
--- Detects fraud-pattern transactions using the same signals as the real-time layer.
+-- Applies the real-time layer's fraud signals to the complete, corrected order history.
 -- This is the BATCH version — for post-hoc analysis, not real-time blocking.
-
-
-
-
-
-
 
 {{
     config(
@@ -21,7 +15,7 @@ with orders as (
     select * from {{ ref('fct_orders') }}
 
     {% if is_incremental() %}
-        where event_date > (select max(event_date) from {{ this }})
+        where event_date >= (select max(event_date) - 3 from {{ this }})
     {% endif %}
 ),
 
@@ -32,6 +26,7 @@ user_hourly_counts as (
         event_date,
         hour_of_day,
         count(transaction_id)   as tx_count_in_hour,
+        count(*) filter (where amount_usd < 10) as small_tx_count_in_hour,
         sum(amount_usd)         as hourly_spend_usd
     from orders
     group by user_id, event_date, hour_of_day
@@ -42,18 +37,19 @@ flagged_orders as (
     select
         o.*,
 
-        -- Signal 1: High-value order in under 60 seconds of session start
-        -- (we use hour_of_day as proxy — session age not available in batch)
-        case when o.amount_usd > 5000 then true else false end
+        -- Signal 1: high-value order within 60 seconds of the session starting
+        coalesce(o.amount_usd > 5000 and o.session_age_seconds < 60, false)
                                                         as flag_high_value,
 
-        -- Signal 2: Velocity breach — user placed 10+ orders in this hour
-        case when uh.tx_count_in_hour > 10 then true else false end
-                                                        as flag_velocity,
+        -- Signal 2: velocity breach, more than 10 orders by this user in the hour
+        uh.tx_count_in_hour > 10                        as flag_velocity,
 
-        -- Signal 3: Small probing amounts (card testing pattern)
-        case when o.amount_usd < 10 and o.order_status = 'completed'
-             then true else false end                   as flag_card_testing,
+        -- Signal 3: card testing, a burst of small probing charges
+        o.amount_usd < 10 and uh.small_tx_count_in_hour >= 5
+                                                        as flag_card_testing,
+
+        -- Signal 4: order placed from outside the customer's home market
+        coalesce(o.ip_region <> o.region, false)        as flag_geo_anomaly,
 
         uh.tx_count_in_hour,
         uh.hourly_spend_usd
@@ -79,15 +75,18 @@ daily_summary as (
         count(case when flag_high_value   then 1 end)   as high_value_alerts,
         count(case when flag_velocity     then 1 end)   as velocity_alerts,
         count(case when flag_card_testing then 1 end)   as card_testing_alerts,
+        count(case when flag_geo_anomaly  then 1 end)   as geo_anomaly_alerts,
 
         count(case when flag_high_value
                      or flag_velocity
                      or flag_card_testing
+                     or flag_geo_anomaly
                    then 1 end)                          as total_flagged_orders,
 
         sum(case when flag_high_value
                    or flag_velocity
                    or flag_card_testing
+                     or flag_geo_anomaly
                  then amount_usd else 0 end)            as flagged_revenue_at_risk_usd,
 
         -- Fraud rate
@@ -95,6 +94,7 @@ daily_summary as (
             count(case when flag_high_value
                           or flag_velocity
                           or flag_card_testing
+                     or flag_geo_anomaly
                         then 1 end)::numeric
             / nullif(count(transaction_id), 0) * 100, 4
         )                                               as fraud_rate_pct,
@@ -103,6 +103,7 @@ daily_summary as (
         count(distinct case when flag_high_value
                               or flag_velocity
                               or flag_card_testing
+                     or flag_geo_anomaly
                             then user_id end)           as flagged_users,
 
         current_timestamp                               as dbt_updated_at

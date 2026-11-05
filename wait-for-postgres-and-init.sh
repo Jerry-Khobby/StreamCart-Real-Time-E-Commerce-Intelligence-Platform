@@ -1,30 +1,25 @@
 #!/bin/bash
-set -e
+# One-shot Airflow bootstrap. Safe to re-run on every `docker compose up`.
+set -euo pipefail
 
 echo "Waiting for Postgres to be ready..."
 until pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER"; do
   sleep 2
 done
 
-echo "Postgres is ready. Initializing Airflow DB..."
-airflow db init
+echo "Migrating the Airflow metadata database..."
+airflow db migrate
 
-
-
-echo "Creating Airflow admin user..."
+echo "Ensuring the Airflow admin user exists..."
 airflow users create \
-    --username ${AIRFLOW_ADMIN_USER} \
-    --password ${AIRFLOW_ADMIN_PASSWORD} \
+    --username "$AIRFLOW_ADMIN_USER" \
+    --password "$AIRFLOW_ADMIN_PASSWORD" \
     --firstname Admin \
     --lastname User \
     --role Admin \
     --email admin@example.com
 
-echo "Creating Spark connection..."
-airflow connections add spark_default \
-    --conn-type spark \
-    --conn-host spark://spark-master \
-    --conn-port 7077 \
-    || echo "spark_default connection already exists — skipping"
+# The Spark cluster has one worker: a pool keeps batch jobs from starving each other.
+airflow pools set spark_batch 1 "Serialises Spark batch jobs on the single worker"
 
-echo "Airflow DB initialized. Exiting."
+echo "Airflow bootstrap complete."

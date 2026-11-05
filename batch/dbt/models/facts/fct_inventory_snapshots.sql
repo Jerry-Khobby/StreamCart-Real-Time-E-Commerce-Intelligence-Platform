@@ -1,18 +1,7 @@
 -- models/facts/fct_inventory_snapshots.sql
 -- Grain: one row per product per warehouse per day.
--- Computes running stock level from the stream of delta events.
-
-
-
-
-
-
-
-
-
-
-
-
+-- stock_on_hand is the last level the warehouse reported that day. The whole history
+-- is read so the 7-day demand window stays correct; only recent days are re-merged.
 
 {{
     config(
@@ -25,12 +14,6 @@
 
 with deltas as (
     select * from {{ ref('stg_inventory') }}
-{% if is_incremental() %}
-where event_date >= (
-    select max(snapshot_date) - interval '7 days'
-    from {{ this }}
-)
-{% endif %}
 ),
 
 daily_deltas as (
@@ -42,6 +25,9 @@ daily_deltas as (
         event_year,
         event_month,
         sum(quantity_delta)                     as net_delta,
+        (array_agg(stock_after order by occurred_at desc))[1]
+                                                as stock_on_hand,
+        max(reorder_point)                      as reorder_point,
         sum(case when quantity_delta > 0
                  then quantity_delta else 0
             end)                                as total_inbound,
@@ -60,13 +46,6 @@ daily_deltas as (
 running_stock as (
     select
         *,
-        -- Cumulative stock level per product per warehouse (running total)
-        sum(net_delta) over (
-            partition by product_id, warehouse_id
-            order by snapshot_date
-            rows between unbounded preceding and current row
-        )                                       as stock_on_hand,
-
         -- 7-day rolling outbound (demand signal)
         sum(total_outbound) over (
             partition by product_id, warehouse_id
@@ -104,11 +83,14 @@ enriched as (
     left join {{ ref('dim_products') }} p   using (product_id)
     left join {{ ref('dim_dates')    }} d   on d.date_id = r.snapshot_date
     left join {{ ref('dim_regions')  }} reg on reg.region_code = r.region
+    {% if is_incremental() %}
+        where r.snapshot_date >= (select max(snapshot_date) - interval '3 days' from {{ this }})
+    {% endif %}
 )
 
 select
     {{ dbt_utils.generate_surrogate_key(
-        ['product_id', 'warehouse_id', 'snapshot_date','region']
+        ['product_id', 'warehouse_id', 'snapshot_date']
     ) }}                                        as surrogate_key,
     *
 from enriched

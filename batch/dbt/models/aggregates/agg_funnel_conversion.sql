@@ -3,20 +3,6 @@
 -- Tracks the e-commerce funnel from session start → conversion.
 -- Powers the Superset "Funnel Conversion Rates" dashboard.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 {{
     config(
         materialized   = 'incremental',
@@ -29,7 +15,7 @@ with sessions as (
     select * from {{ ref('fct_sessions') }}
 
     {% if is_incremental() %}
-        where session_date > (select max(event_date) from {{ this }})
+        where session_date >= (select max(event_date) - 3 from {{ this }})
     {% endif %}
 )
 

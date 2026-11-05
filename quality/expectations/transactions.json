@@ -1,0 +1,13 @@
+[
+  {"expectation_type": "expect_column_values_to_not_be_null", "kwargs": {"column": "transaction_id"}},
+  {"expectation_type": "expect_column_values_to_not_be_null", "kwargs": {"column": "user_id"}},
+  {"expectation_type": "expect_column_values_to_not_be_null", "kwargs": {"column": "product_id"}},
+  {"expectation_type": "expect_column_values_to_not_be_null", "kwargs": {"column": "region"}},
+  {"expectation_type": "expect_column_values_to_not_be_null", "kwargs": {"column": "amount_usd"}},
+  {"expectation_type": "expect_column_values_to_not_be_null", "kwargs": {"column": "event_time"}},
+  {"expectation_type": "expect_column_values_to_be_in_set", "kwargs": {"column": "user_known", "value_set": [true]}},
+  {"expectation_type": "expect_column_values_to_be_in_set", "kwargs": {"column": "currency", "value_set": ["USD", "EUR", "JPY", "NGN", "BRL"]}},
+  {"expectation_type": "expect_column_values_to_be_in_set", "kwargs": {"column": "status", "value_set": ["completed", "pending", "failed", "refunded"]}},
+  {"expectation_type": "expect_column_values_to_be_between", "kwargs": {"column": "amount_usd", "min_value": 0, "max_value": 50000, "strict_min": true, "strict_max": true}},
+  {"expectation_type": "expect_column_values_to_be_between", "kwargs": {"column": "event_age_seconds", "min_value": -300, "max_value": 604800}}
+]

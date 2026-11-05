@@ -1,0 +1,19 @@
+{
+  "type": "record",
+  "name": "InventoryUpdate",
+  "namespace": "com.streamcart.events",
+  "doc": "One stock movement at a warehouse, as reported by the inventory system.",
+  "fields": [
+    {"name": "event_type", "type": "string"},
+    {"name": "event_id", "type": "string"},
+    {"name": "product_id", "type": "string"},
+    {"name": "warehouse_id", "type": "string"},
+    {"name": "region", "type": "string"},
+    {"name": "update_type", "type": "string"},
+    {"name": "quantity_delta", "type": "int"},
+    {"name": "stock_after", "type": "int", "doc": "Units on hand after this movement."},
+    {"name": "reorder_point", "type": "int", "doc": "Stock level below which a restock is required."},
+    {"name": "timestamp", "type": ["null", "string"], "default": null},
+    {"name": "is_backfill", "type": "boolean", "default": false}
+  ]
+}

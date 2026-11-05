@@ -1,7 +1,7 @@
 [project]
 name = "streamcart-real-time-e-commerce-intelligence-platform"
 version = "0.1.0"
-description = "Add your description here"
+description = "Real-time and batch e-commerce data lakehouse: Kafka, Spark, Iceberg, ksqlDB, Airflow, dbt, Grafana and Superset"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

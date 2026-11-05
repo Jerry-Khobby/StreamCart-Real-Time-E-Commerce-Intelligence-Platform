@@ -1,0 +1,639 @@
+{
+  "uid": "streamcart-observability",
+  "title": "StreamCart: Pipeline Observability",
+  "description": "Is the pipeline running, on time and trustworthy?",
+  "tags": [
+    "streamcart",
+    "observability"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timezone": "utc",
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "DAG run success rate (7 days)",
+      "type": "stat",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT round(100.0 * count(*) FILTER (WHERE state = 'success') / nullif(count(*) FILTER (WHERE state IN ('success', 'failed')), 0), 1) AS value FROM public.dag_run WHERE execution_date > now() - interval '7 days'",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 90
+              },
+              {
+                "color": "green",
+                "value": 98
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Stalest monitored table",
+      "type": "stat",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT max(age_seconds) AS value FROM observability.freshness WHERE sampled_at = (SELECT max(sampled_at) FROM observability.freshness)",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 7200
+              },
+              {
+                "color": "red",
+                "value": 90000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "description": "Gold refreshes daily, so up to about 25 hours is normal."
+    },
+    {
+      "id": 3,
+      "title": "Expectations failing at the Silver gate (24h)",
+      "type": "stat",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(*) AS value FROM observability.quality_results WHERE stage = 'clean' AND NOT success AND run_at > now() - interval '24 hours'",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Schema changes detected (7 days)",
+      "type": "stat",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(*) AS value FROM observability.schema_changes WHERE detected_at > now() - interval '7 days'",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "DAG reliability (last 7 days)",
+      "type": "table",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT dag_id, count(*) FILTER (WHERE state = 'success') AS success, count(*) FILTER (WHERE state = 'failed') AS failed, count(*) FILTER (WHERE state = 'running') AS running, round(100.0 * count(*) FILTER (WHERE state = 'success') / nullif(count(*) FILTER (WHERE state IN ('success', 'failed')), 0), 1) AS success_pct, max(end_date) AS last_finished FROM public.dag_run WHERE execution_date > now() - interval '7 days' GROUP BY dag_id ORDER BY dag_id",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "success_pct"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "DAG runs per hour by state",
+      "type": "timeseries",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT date_trunc('hour', execution_date) AS time, state AS metric, count(*) AS value FROM public.dag_run WHERE $__timeFilter(execution_date) GROUP BY 1, 2 ORDER BY 1",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Row counts",
+      "type": "timeseries",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT sampled_at AS time, table_name AS metric, row_count AS value FROM observability.row_counts WHERE $__timeFilter(sampled_at) ORDER BY 1",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Data freshness (latest sample)",
+      "type": "table",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT table_name, latest_at, round(age_seconds::numeric / 60, 1) AS age_minutes FROM observability.freshness WHERE sampled_at = (SELECT max(sampled_at) FROM observability.freshness) ORDER BY age_seconds DESC",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "age_minutes"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 120
+                    },
+                    {
+                      "color": "red",
+                      "value": 1500
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Silver row accounting (latest runs)",
+      "type": "table",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT run_at, table_name, rows_in, rows_out, rejected, gate FROM observability.silver_runs ORDER BY run_at DESC, table_name LIMIT 30",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Bad data caught in raw input (24h)",
+      "type": "table",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 22,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT table_name, expectation, column_name, sum(unexpected_count) AS bad_rows FROM observability.quality_results WHERE stage = 'raw' AND NOT success AND run_at > now() - interval '24 hours' GROUP BY 1, 2, 3 ORDER BY bad_rows DESC",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "description": "Great Expectations results before cleaning. The simulator injects these faults on purpose."
+    },
+    {
+      "id": 11,
+      "title": "Schema change log",
+      "type": "table",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT detected_at, object_name, change_kind, detail FROM observability.schema_changes ORDER BY detected_at DESC LIMIT 50",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "description": "Column changes in the warehouse and new versions of Kafka contracts."
+    }
+  ]
+}

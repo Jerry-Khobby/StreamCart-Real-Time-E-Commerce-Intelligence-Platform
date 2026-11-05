@@ -1,0 +1,6 @@
+# Containers run these files on Linux, so a Windows CRLF checkout must not
+# corrupt them (a CRLF shebang fails with "bad interpreter").
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jar binary
