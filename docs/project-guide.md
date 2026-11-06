@@ -361,6 +361,8 @@ These all passed code review and unit tests, and only showed up when the system 
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
+| 68 orders had no customer key | Silver added orders between the dimension and fact builds, so their customers weren't in the dimension yet (a late-arriving dimension). A new `dbt build` test caught it | Hold those orders with an inner join. The 3-day window loads them on the next run |
+| A fresh install's read-only login would fail | Init scripts run alphabetically, so the grant ran before `silver_schema.sql` | Create the schema first, and run the scripts in order in CI |
 | Gold stayed empty forever, while all 70 tests passed | On an empty table, `max()` is `NULL`, so the incremental filter matched nothing | `coalesce` the filter, and fail the DAG if Gold is empty while Silver has data |
 | Fresh events were rejected as being in the future, then lost | Age was measured from the job's start, but earlier tables take minutes, and the watermark moved past the rejected rows | Measure age when each table is read |
 | Live revenue was inflated by about $2M | The sink filtered bad timestamps but not injected $999,999 amounts | Apply Silver's amount bounds in the sink |
@@ -540,7 +542,7 @@ Most failures recover by replaying data, because Kafka and Bronze keep it and th
 | Airflow scheduler stops | Batch jobs stop, but Kafka, Bronze and the speed path continue | `catchup=False` skips missed intervals, and the watermark means the next Silver run reads everything new |
 | FX rate API is down | `fx_rates_refresh` fails and retries 3 times | Silver keeps using the latest stored rate |
 | dbt source tests fail | Gold isn't rebuilt, so yesterday's tables stay in place | Fix Silver, then rerun the DAG |
-| dbt Gold tests fail | The DAG fails, but the new tables have already been built, so analysts can see the bad data | Fix the model and rerun. This is a real weakness |
+| dbt Gold tests fail | The next layer doesn't build, but the failing table stays visible to analysts, and the failure feed records it | Fix the model and rerun. This is a real weakness |
 | ksqlDB restarts | Alerts pause | Queries resume from their Kafka offsets |
 | Serving sink crashes | Dashboards go stale | Docker restarts it and it replays from its last commit, with upserts removing repeats |
 | MinIO is down | Bronze, Silver and maintenance fail, but the speed path continues | Jobs recover through their checkpoint or watermark |
@@ -593,6 +595,10 @@ Try to answer each question aloud before reading the answer. If you can't, go ba
 | How are duplicates handled? | Window deduplication by ID within a batch, then `MERGE INTO` on the primary key across batches |
 | What does idempotent mean here? | Reprocessing the same rows leaves the table unchanged |
 | Why track watermarks on ingestion time? | Tracking event time would skip late arrivals |
+| Where do rejected rows go? | `lake.silver.rejected_rows`, as JSON, so they can be inspected or replayed |
+| How do you know no orders went missing? | A daily reconciliation compares `oltp.orders` with Silver |
+| What is a late-arriving dimension? | A fact that arrives before its dimension row. Here, those orders wait for the next run |
+| Why do dashboards have their own database login? | Least privilege: a dashboard or API bug can't change data |
 | Why validate twice? | The raw check measures input quality, and the clean check is the gate that blocks writes |
 | How is a bot detected? | A bot user agent, or 5+ events in a session averaging under 3 seconds apart |
 | Why not use a bot label from the simulator? | The filter would prove nothing, and real traffic has no such label |

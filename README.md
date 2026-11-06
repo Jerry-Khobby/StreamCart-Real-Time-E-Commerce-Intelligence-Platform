@@ -1,5 +1,7 @@
 # StreamCart: Real-Time E-Commerce Intelligence Platform
 
+[![CI](https://github.com/Jerry-Khobby/StreamCart-Real-Time-E-Commerce-Intelligence-Platform/actions/workflows/ci.yml/badge.svg)](https://github.com/Jerry-Khobby/StreamCart-Real-Time-E-Commerce-Intelligence-Platform/actions/workflows/ci.yml)
+
 A data lakehouse for a simulated global e-commerce company. One event stream serves two needs: fraud and low-stock alerts within seconds, and validated historical analytics for the business.
 
 **Stack:** Kafka, Schema Registry, ksqlDB, Spark Structured Streaming, Apache Iceberg, MinIO, Airflow, dbt, Great Expectations, PostgreSQL, Grafana, Superset, FastAPI, Docker Compose.
@@ -83,8 +85,12 @@ All data shown is simulated.
 ### Data quality and observability
 
 - [Great Expectations suites](quality/expectations) run twice per table. The run on raw data measures how dirty the input is. The run on cleaned data is a gate: if it fails, nothing is written and the watermark doesn't move.
-- dbt tests cover keys, accepted values, ranges and foreign key relationships.
-- The Grafana observability dashboard tracks DAG success rates, row counts, data freshness, quality results and schema changes.
+- Rows that fail are kept in a dead-letter table, so they can be inspected or replayed.
+- dbt tests cover keys, accepted values, ranges and foreign key relationships. A failed test stops the next layer from building.
+- A daily reconciliation compares source orders with Silver.
+- The Grafana observability dashboard tracks DAG success rates, task failures, row counts, data freshness, quality results and schema changes.
+
+[docs/best-practices.md](docs/best-practices.md) lists which data engineering practices are in place, which are partial, and which are deliberately left out.
 
 ### Dashboards as code
 
@@ -156,11 +162,16 @@ Everything below was run against the live stack, starting from a clean install w
 | Check | Result |
 | --- | --- |
 | Clean install with `docker compose up -d --build` | All 22 services start, exit code 0 |
-| Automated tests | 60 of 60 pass |
-| dbt | 15 models build, 86 of 86 tests pass |
+| Automated tests | 69 of 69 pass, and CI runs them on every push |
+| dbt | 15 models build, 116 of 116 tests pass |
 | Silver on seeded history | 53,820 clickstream events in, 49,504 kept: bots and bad rows removed |
 | Quality gate | A tightened rule blocked the write, and the retry recovered those rows with no loss or duplicates |
 | Idempotency | After a full replay, row count equals distinct IDs |
+| Silver to Gold | 15,319 non-failed orders in Silver, 15,319 in `fct_orders` |
+| Dead-letter table | Rejected rows are kept as JSON in `lake.silver.rejected_rows` |
+| Read-only login | Grafana, Superset and the API can read, and writes are denied |
+| Reconciliation | No orders missing from Silver across 7 complete seeded days |
+| Failure feed | A real failed task was recorded for Grafana |
 | Account takeover detection | 7 of 7 orders caught |
 | Geo anomaly detection | 6 of 6 orders caught |
 | Card testing detection | 10 of 10 users caught |
