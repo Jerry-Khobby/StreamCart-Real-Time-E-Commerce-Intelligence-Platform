@@ -17,7 +17,7 @@ with events as (
     select * from {{ ref('stg_clickstream') }}
 
     {% if is_incremental() %}
-        where occurred_at >= (select max(session_end_at) - interval '1 day' from {{ this }})
+        where occurred_at >= coalesce((select max(session_end_at) - interval '1 day' from {{ this }}), '-infinity')
     {% endif %}
 ),
 

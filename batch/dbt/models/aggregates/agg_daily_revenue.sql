@@ -14,7 +14,7 @@ with orders as (
     select * from {{ ref('fct_orders') }}
 
     {% if is_incremental() %}
-        where event_date >= (select max(event_date) - 3 from {{ this }})
+        where event_date >= coalesce((select max(event_date) - 3 from {{ this }}), '-infinity')
     {% endif %}
 )
 

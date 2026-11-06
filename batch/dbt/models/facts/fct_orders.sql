@@ -15,7 +15,7 @@ with transactions as (
     select * from {{ ref('stg_transactions') }}
 
     {% if is_incremental() %}
-        where occurred_at >= (select max(occurred_at) - interval '3 days' from {{ this }})
+        where occurred_at >= coalesce((select max(occurred_at) - interval '3 days' from {{ this }}), '-infinity')
     {% endif %}
 ),
 

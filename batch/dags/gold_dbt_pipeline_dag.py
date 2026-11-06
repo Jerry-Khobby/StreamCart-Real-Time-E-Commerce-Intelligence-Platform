@@ -47,6 +47,12 @@ def log_gold_row_counts():
         count = hook.get_first(f"SELECT COUNT(*) FROM {table}")[0]
         print(f"{table:<35} {count:>10,} rows")
 
+    # dbt tests pass on an empty table, so check that Silver's orders actually arrived.
+    silver = hook.get_first("SELECT COUNT(*) FROM silver.transactions WHERE status <> 'failed'")[0]
+    gold = hook.get_first("SELECT COUNT(*) FROM gold.fct_orders")[0]
+    if silver and not gold:
+        raise ValueError(f"gold.fct_orders is empty but Silver has {silver:,} orders")
+
 
 with DAG(
     dag_id="gold_dbt_pipeline",
