@@ -153,6 +153,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_DEFAULT_BUCKETS: ${MINIO_BUCKET},${MINIO_BUCKET}-archive
+      # This image leaves the web console off unless asked.
+      MINIO_BROWSER: "on"
     volumes:
       - minio-data:/bitnami/minio/data
     ports:
