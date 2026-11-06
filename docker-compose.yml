@@ -125,6 +125,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_READER_USER: ${POSTGRES_READER_USER}
+      POSTGRES_READER_PASSWORD: ${POSTGRES_READER_PASSWORD}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./batch/db/init:/docker-entrypoint-initdb.d:ro
@@ -526,6 +528,9 @@ services:
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
+      # Read-only: the API never writes
+      POSTGRES_USER: ${POSTGRES_READER_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_READER_PASSWORD}
     ports:
       - "${API_HOST_PORT:-8000}:8000"
     networks:
@@ -541,8 +546,9 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Read-only: dashboards never write
+      POSTGRES_USER: ${POSTGRES_READER_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_READER_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
