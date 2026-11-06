@@ -61,8 +61,10 @@ joined as (
         end                                     as time_of_day_bucket
 
     from transactions t
-    left join {{ ref('dim_customers') }} c using (user_id)
-    left join {{ ref('dim_products')  }} p using (product_id)
+    -- Silver can add an order between the dimension and fact builds, before its customer
+    -- is in dim_customers. Hold those orders: the 3-day window loads them on the next run.
+    join {{ ref('dim_customers') }} c using (user_id)
+    join {{ ref('dim_products')  }} p using (product_id)
     left join {{ ref('dim_dates')     }} d on d.date_id = t.event_date
     left join {{ ref('dim_regions')   }} r on r.region_code = t.region
 )
