@@ -6,12 +6,16 @@ Runs the dbt Gold layer daily at 03:00 UTC.
 Execution order:
   1. dbt deps       install packages
   2. source tests   validate the Silver tables before building on them
-  3. staging        views over Silver
-  4. dimensions     dim_*
-  5. facts          fct_*
-  6. aggregates     agg_*
-  7. dbt test       validate all Gold output
-  8. log counts     observability check
+  3. freshness      warn if Silver has stopped updating
+  4. staging        views over Silver
+  5. dimensions     dim_*
+  6. facts          fct_*
+  7. aggregates     agg_*
+  8. log counts     fail if Gold is empty while Silver has data
+
+Each layer runs `dbt build`, which tests each model straight after building it. A
+failed test stops the next layer, so a bad dimension can't flow into facts and KPIs.
+The failing table itself stays visible until it's fixed.
 
 Each layer is one dbt invocation. dbt already orders and parallelises models within
 it, and concurrent dbt processes would conflict over the shared target/ directory.
@@ -23,6 +27,7 @@ from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
+from common import record_failure
 
 DBT_DIR = "/opt/airflow/dbt"
 DBT_CMD = f"cd {DBT_DIR} && dbt --no-use-colors"
@@ -36,8 +41,8 @@ GOLD_TABLES = [
 ]
 
 
-def run_layer(layer: str) -> BashOperator:
-    return BashOperator(task_id=f"dbt_run_{layer}", bash_command=f"{DBT_CMD} run --select {layer} {DBT_ARGS}")
+def build_layer(layer: str) -> BashOperator:
+    return BashOperator(task_id=f"dbt_build_{layer}", bash_command=f"{DBT_CMD} build --select {layer} {DBT_ARGS}")
 
 
 def log_gold_row_counts():
@@ -63,6 +68,7 @@ with DAG(
     max_active_runs=1,
     default_args={
         "owner": "streamcart",
+        "on_failure_callback": record_failure,
         "retries": 1,
         "retry_delay": timedelta(minutes=5),
         "execution_timeout": timedelta(minutes=30),
@@ -77,9 +83,9 @@ with DAG(
         bash_command=f"{DBT_CMD} test --select source:silver {DBT_ARGS}",
     )
 
-    dbt_test = BashOperator(
-        task_id="dbt_test_gold",
-        bash_command=f"{DBT_CMD} test --select dimensions facts aggregates {DBT_ARGS}",
+    dbt_freshness = BashOperator(
+        task_id="dbt_source_freshness",
+        bash_command=f"{DBT_CMD} source freshness {DBT_ARGS}",
     )
 
     log_counts = PythonOperator(task_id="log_gold_counts", python_callable=log_gold_row_counts)
@@ -87,10 +93,10 @@ with DAG(
     (
         dbt_deps
         >> dbt_source_test
-        >> run_layer("staging")
-        >> run_layer("dimensions")
-        >> run_layer("facts")
-        >> run_layer("aggregates")
-        >> dbt_test
+        >> dbt_freshness
+        >> build_layer("staging")
+        >> build_layer("dimensions")
+        >> build_layer("facts")
+        >> build_layer("aggregates")
         >> log_counts
     )
