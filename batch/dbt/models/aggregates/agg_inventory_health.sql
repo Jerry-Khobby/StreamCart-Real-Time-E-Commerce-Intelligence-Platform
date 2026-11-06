@@ -14,7 +14,7 @@ with snapshots as (
     select * from {{ ref('fct_inventory_snapshots') }}
 
     {% if is_incremental() %}
-        where snapshot_date >= (select max(snapshot_date) - 3 from {{ this }})
+        where snapshot_date >= coalesce((select max(snapshot_date) - 3 from {{ this }}), '-infinity')
     {% endif %}
 )
 

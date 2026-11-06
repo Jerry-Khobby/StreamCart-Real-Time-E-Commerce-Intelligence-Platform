@@ -445,7 +445,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT table_name, latest_at, round(age_seconds::numeric / 60, 1) AS age_minutes FROM observability.freshness WHERE sampled_at = (SELECT max(sampled_at) FROM observability.freshness) ORDER BY age_seconds DESC",
+          "rawSql": "SELECT table_name, latest_at, round(age_seconds::numeric / 60, 1) AS age_minutes FROM observability.freshness WHERE sampled_at = (SELECT max(sampled_at) FROM observability.freshness) ORDER BY age_seconds DESC NULLS LAST",
           "editorMode": "code"
         }
       ],

@@ -84,7 +84,7 @@ enriched as (
     left join {{ ref('dim_dates')    }} d   on d.date_id = r.snapshot_date
     left join {{ ref('dim_regions')  }} reg on reg.region_code = r.region
     {% if is_incremental() %}
-        where r.snapshot_date >= (select max(snapshot_date) - interval '3 days' from {{ this }})
+        where r.snapshot_date >= coalesce((select max(snapshot_date) - interval '3 days' from {{ this }}), '-infinity')
     {% endif %}
 )
 

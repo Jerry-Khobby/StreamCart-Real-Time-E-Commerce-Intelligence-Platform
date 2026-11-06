@@ -28,7 +28,7 @@ def jdbc_props() -> dict:
 
 def create_spark_session(app_name: str) -> SparkSession:
     props = jdbc_props()
-    return (
+    session = (
         SparkSession.builder.appName(app_name)
         .config("spark.sql.session.timeZone", "UTC")
         # MinIO through S3A
@@ -51,6 +51,9 @@ def create_spark_session(app_name: str) -> SparkSession:
         .config(f"spark.sql.catalog.{CATALOG}.warehouse", f"s3a://{bucket()}/warehouse")
         .getOrCreate()
     )
+    # INFO logs thousands of lines per job, which Airflow then has to capture and store.
+    session.sparkContext.setLogLevel("WARN")
+    return session
 
 
 def merge_into(spark: SparkSession, df: DataFrame, table: str, key: str):

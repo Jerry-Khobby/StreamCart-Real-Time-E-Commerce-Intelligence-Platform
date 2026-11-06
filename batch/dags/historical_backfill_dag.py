@@ -6,6 +6,9 @@ and late corrections reach the warehouse, then rebuilds Gold. MERGE INTO makes t
 replay idempotent.
 
 Trigger manually with {"lookback_days": 30} to replay a longer window.
+
+Paused on a fresh install, because Airflow would otherwise run it straight away and
+repeat the work the first Silver run has just done. Unpause it to run weekly.
 """
 
 from datetime import datetime, timedelta
@@ -22,6 +25,7 @@ with DAG(
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,
+    is_paused_upon_creation=True,
     params={"lookback_days": 7},
     default_args={"owner": "streamcart", "retries": 1, "retry_delay": timedelta(minutes=10)},
     tags=["backfill", "spark", "batch"],

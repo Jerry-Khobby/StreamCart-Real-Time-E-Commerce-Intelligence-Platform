@@ -27,7 +27,12 @@ def archive_expired(spark, table: str, cutoff: datetime):
     count = expired.count()
     if count:
         path = f"s3a://{bucket()}-archive/bronze/{table}"
+        # At-least-once: if the delete below fails, a retry archives these rows again.
+        # Event IDs let a reader of the archive remove any such repeats.
         expired.write.mode("append").option("compression", "snappy").partitionBy("region", "year", "month", "day").parquet(path)
+        # The stream appends during this delete. The default serializable isolation
+        # treats that as a conflict and aborts, but new rows can't be 90 days old.
+        spark.sql(f"ALTER TABLE {identifier} SET TBLPROPERTIES ('write.delete.isolation-level' = 'snapshot')")
         spark.sql(f"DELETE FROM {identifier} WHERE to_timestamp(timestamp) < timestamp'{cutoff.isoformat()}'")
     logger.info(f"[{table}] Archived and removed {count:,} rows older than {cutoff.date()}")
     expired.unpersist()

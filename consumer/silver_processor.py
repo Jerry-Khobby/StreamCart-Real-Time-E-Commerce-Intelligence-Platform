@@ -333,8 +333,12 @@ def process_table(spark: SparkSession, table: str, known_users: DataFrame, fx_ra
         new_rows.unpersist()
         return "no_data"
 
+    # Measure age from when this table was read, not when the job started. Earlier
+    # tables can take minutes, which would make fresh events look like future ones.
+    read_at = datetime.now(timezone.utc)
+
     def prepare(rows: DataFrame) -> DataFrame:
-        aged = with_event_age(rows, run_at)
+        aged = with_event_age(rows, read_at)
         return aged if table == "inventory" else with_user_known(aged, known_users)
 
     raw = prepare(new_rows).persist()

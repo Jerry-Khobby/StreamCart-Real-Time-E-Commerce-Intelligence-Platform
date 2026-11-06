@@ -8,6 +8,14 @@
 #   Real-time:       ksqldb, realtime-sink
 #   Data generation: data-seed (one-shot history), data-generator (live)
 #   Serving:         api, grafana, superset
+#
+# Layers: COMPOSE_PROFILES in .env chooses what starts, so a smaller machine can
+# run just the part being worked on. Kafka, Schema Registry, Postgres and the
+# simulator always run.
+#   full      everything
+#   realtime  ksqlDB, serving sink, REST API, Grafana
+#   batch     MinIO, Spark, Bronze stream, Airflow, dbt
+#   bi        Superset (needs Gold, so run batch at least once first)
 # ============================================================================
 
 # ── YAML ANCHORS ────────────────────────────────────────────────────────────
@@ -25,9 +33,21 @@ x-airflow-env: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    # Keep Airflow light: this is a single-machine stack with a few small DAGs
+    AIRFLOW__CORE__PARALLELISM: "4"
+    AIRFLOW__WEBSERVER__WORKERS: "1"
+    AIRFLOW__WEBSERVER__WORKER_REFRESH_BATCH_SIZE: "0"
+    # Booting beside the whole stack can exceed the default 120 seconds.
+    AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT: "600"
+    AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT: "300"
+    AIRFLOW__SCHEDULER__PARSING_PROCESSES: "1"
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "120"
+    AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "300"
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     # Airflow connections used by the DAGs
-    AIRFLOW_CONN_SPARK_DEFAULT: spark://spark-master:7077
+    # The Spark hook builds --master from host:port, so the host carries the scheme.
+    AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type": "spark", "host": "spark://spark-master", "port": 7077}'
     AIRFLOW_CONN_STREAMCART_POSTGRES: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     # PostgreSQL
     POSTGRES_HOST: postgres
@@ -86,6 +106,10 @@ x-producer-common: &producer-common
     - streamcart-net
 
 # ── SERVICES ────────────────────────────────────────────────────────────────
+# start_period only stops failures being counted while a service boots, and a
+# service still turns healthy as soon as it's ready. It's set high because a cold
+# start of this whole stack can take minutes, and compose abandons anything that
+# depends on a service it has marked unhealthy.
 
 services:
   # ══════════════════════════════════════════════════════════════════════════
@@ -107,11 +131,13 @@ services:
     ports:
       - "${POSTGRES_HOST_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      # Over TCP: the image's temporary init server only listens on a Unix socket, so a
+      # socket check reports healthy before the real server has started.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 300s
     networks:
       - streamcart-net
     restart: unless-stopped
@@ -122,6 +148,7 @@ services:
   minio:
     image: bitnamilegacy/minio:2025.7.23
     container_name: streamcart-minio
+    profiles: ["batch", "full"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
@@ -136,7 +163,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 15s
+      start_period: 300s
     networks:
       - streamcart-net
     restart: unless-stopped
@@ -148,6 +175,7 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_HEAP_OPTS: "-Xms64m -Xmx128m"
     ports:
       - "2181:2181"
     healthcheck:
@@ -155,7 +183,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 20s
+      start_period: 300s
     networks:
       - streamcart-net
     restart: unless-stopped
@@ -174,18 +202,22 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      # ksqlDB writes its command topic in transactions. The defaults need 3 brokers.
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_RETENTION_HOURS: "168"
-      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+      KAFKA_HEAP_OPTS: "-Xms128m -Xmx384m"
     ports:
       - "9092:9092"
       - "9093:9093"
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:9092 --list"]
+      # A port check: kafka-topics would start a whole new JVM on every check.
+      test: ["CMD-SHELL", "nc -z localhost 9092 || exit 1"]
       interval: 15s
-      timeout: 10s
+      timeout: 5s
       retries: 10
-      start_period: 30s
+      start_period: 300s
     networks:
       - streamcart-net
     restart: unless-stopped
@@ -218,7 +250,7 @@ services:
       SCHEMA_REGISTRY_HOST_NAME: schema-registry
       SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
       SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
-      SCHEMA_REGISTRY_HEAP_OPTS: "-Xms128m -Xmx256m"
+      SCHEMA_REGISTRY_HEAP_OPTS: "-Xms64m -Xmx192m"
     ports:
       - "${SCHEMA_REGISTRY_HOST_PORT:-8085}:8081"
     healthcheck:
@@ -226,7 +258,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 10
-      start_period: 20s
+      start_period: 300s
     networks:
       - streamcart-net
     restart: unless-stopped
@@ -250,6 +282,7 @@ services:
   airflow-init:
     <<: *airflow-common
     container_name: streamcart-airflow-init
+    profiles: ["batch", "full"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -265,6 +298,7 @@ services:
   airflow-webserver:
     <<: *airflow-common
     container_name: streamcart-airflow-webserver
+    profiles: ["batch", "full"]
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -278,12 +312,13 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 300s
 
   # ── Airflow scheduler (DAG execution engine) ──────────────────────────────
   airflow-scheduler:
     <<: *airflow-common
     container_name: streamcart-airflow-scheduler
+    profiles: ["batch", "full"]
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -291,15 +326,13 @@ services:
         condition: service_healthy
     command: scheduler
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "airflow jobs check --job-type SchedulerJob --hostname $$(hostname) || exit 1",
-        ]
+      # The scheduler's own health endpoint. "airflow jobs check" starts a whole
+      # Airflow process on every check, which is a constant drain.
+      test: ["CMD-SHELL", "curl -f http://localhost:8974/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 300s
 
   # ══════════════════════════════════════════════════════════════════════════
   # PROCESSING LAYER (Spark)
@@ -309,6 +342,7 @@ services:
   spark-master:
     <<: *spark-common
     container_name: streamcart-spark-master
+    profiles: ["batch", "full"]
     environment:
       SPARK_DAEMON_MEMORY: 256m
     command: ["spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077 --webui-port 8080"]
@@ -319,31 +353,33 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 300s
 
   # ── Spark worker (execution node) ─────────────────────────────────────────
-  # 2 cores for the streaming Bronze job + 2 for whichever batch job is running.
+  # 1 core for the streaming Bronze job + 2 for whichever batch job is running.
   spark-worker:
     <<: *spark-common
     container_name: streamcart-spark-worker
+    profiles: ["batch", "full"]
     depends_on:
       spark-master:
         condition: service_healthy
     environment:
       SPARK_WORKER_DIR: /tmp/spark-work
       SPARK_DAEMON_MEMORY: 256m
-    command: ["spark-class org.apache.spark.deploy.worker.Worker --cores 4 --memory 3g --webui-port 8081 spark://spark-master:7077"]
+    command: ["spark-class org.apache.spark.deploy.worker.Worker --cores 3 --memory 2g --webui-port 8081 spark://spark-master:7077"]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8081 || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 300s
 
   # ── Spark Bronze layer (Kafka → MinIO streaming) ──────────────────────────
   spark-bronze-job:
     <<: *spark-common
     container_name: streamcart-spark-bronze
+    profiles: ["batch", "full"]
     depends_on:
       spark-worker:
         condition: service_healthy
@@ -359,12 +395,14 @@ services:
         --master spark://spark-master:7077
         --conf spark.driver.host=spark-bronze-job
         --conf spark.driver.bindAddress=0.0.0.0
-        --conf spark.driver.memory=1g
-        --conf spark.cores.max=2
-        --conf spark.executor.memory=1g
-        --conf spark.sql.shuffle.partitions=4
+        --conf spark.driver.memory=640m
+        --conf spark.cores.max=1
+        --conf spark.executor.memory=640m
+        --conf spark.sql.shuffle.partitions=2
+        --conf spark.ui.enabled=false
         /opt/airflow/consumer/spark_streaming.py
-    restart: on-failure:5
+    # Always restart: the checkpoint resumes exactly where the stream stopped.
+    restart: unless-stopped
 
   # ══════════════════════════════════════════════════════════════════════════
   # DATA GENERATION LAYER
@@ -379,7 +417,7 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
-    command: python -m producer.data_generator --mode backfill --days 14 --tx-per-day 2000
+    command: python -m producer.data_generator --mode backfill --days 14 --tx-per-day 1000
     restart: "no"
 
   # ── Data generator (live synthetic events) ────────────────────────────────
@@ -398,7 +436,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 300s
 
   # ══════════════════════════════════════════════════════════════════════════
   # REAL-TIME LAYER
@@ -408,6 +446,7 @@ services:
   ksqldb-server:
     image: confluentinc/cp-ksqldb-server:7.7.7
     container_name: streamcart-ksqldb
+    profiles: ["realtime", "full"]
     depends_on:
       schema-registry:
         condition: service_healthy
@@ -420,7 +459,8 @@ services:
       KSQL_KSQL_SINK_REPLICAS: 1
       KSQL_KSQL_STREAMS_REPLICATION_FACTOR: 1
       KSQL_KSQL_LOGGING_PROCESSING_TOPIC_REPLICATION_FACTOR: 1
-      KSQL_HEAP_OPTS: "-Xms256m -Xmx512m"
+      KSQL_HEAP_OPTS: "-Xms128m -Xmx400m"
+      KSQL_CONFLUENT_SUPPORT_METRICS_ENABLE: "false"
     ports:
       - "${KSQLDB_HOST_PORT:-8088}:8088"
     healthcheck:
@@ -428,7 +468,8 @@ services:
       interval: 15s
       timeout: 5s
       retries: 15
-      start_period: 40s
+      # First start creates ksqlDB's internal topics, which can take several minutes.
+      start_period: 420s
     networks:
       - streamcart-net
     restart: unless-stopped
@@ -436,6 +477,7 @@ services:
   ksqldb-init:
     image: confluentinc/cp-ksqldb-cli:7.7.7
     container_name: streamcart-ksqldb-init
+    profiles: ["realtime", "full"]
     depends_on:
       ksqldb-server:
         condition: service_healthy
@@ -452,6 +494,7 @@ services:
   realtime-sink:
     <<: *producer-common
     container_name: streamcart-realtime-sink
+    profiles: ["realtime", "full"]
     depends_on:
       ksqldb-init:
         condition: service_completed_successfully
@@ -473,6 +516,7 @@ services:
     build: ./api
     image: streamcart-api:latest
     container_name: streamcart-api
+    profiles: ["realtime", "full"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -490,6 +534,7 @@ services:
   grafana:
     image: grafana/grafana-oss:11.5.8
     container_name: streamcart-grafana
+    profiles: ["realtime", "full"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -515,6 +560,7 @@ services:
     build: ./dashboards/superset
     image: streamcart-superset:latest
     container_name: streamcart-superset-init
+    profiles: ["bi", "full"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -527,10 +573,14 @@ services:
   superset:
     image: streamcart-superset:latest
     container_name: streamcart-superset
+    profiles: ["bi", "full"]
     depends_on:
       superset-init:
         condition: service_completed_successfully
     env_file: .env
+    environment:
+      SERVER_WORKER_AMOUNT: "1"
+      SERVER_THREADS_AMOUNT: "4"
     ports:
       - "${SUPERSET_HOST_PORT:-8089}:8088"
     networks:

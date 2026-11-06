@@ -103,7 +103,11 @@ CHARTS = {
     "Conversion rate by region": ("agg_funnel_conversion", timeseries_params(
         "agg_funnel_conversion", "event_date", [metric("overall_conversion_rate_pct", "AVG", "Conversion %")], ["region"],
         y_axis_format=",.1f",
-    )),
+    ) | {"adhoc_filters": [{
+        # A day with only a handful of sessions gives a meaningless rate and ruins the scale.
+        "expressionType": "SIMPLE", "clause": "WHERE", "subject": "sessions_started",
+        "operator": ">=", "comparator": 10, "operatorId": "GREATER_THAN_OR_EQUAL",
+    }]}),
     "Top 15 products by revenue": ("dim_products", {
         "viz_type": "table", "query_mode": "raw",
         "all_columns": ["product_id", "category", "popularity_tier", "total_orders", "total_units_sold", "total_revenue_usd"],
@@ -120,9 +124,9 @@ CHARTS = {
 
 # Dashboard layout: rows of (chart name, width out of 12, height)
 LAYOUT = [
-    [("Total net revenue", 3, 26), ("Total orders", 3, 26), ("Average order value", 6, 26)],
+    [("Total net revenue", 3, 40), ("Total orders", 3, 40), ("Average order value", 6, 40)],
     [("Revenue trend by region", 12, 55)],
-    [("Customer retention cohorts (% of cohort ordering)", 12, 50)],
+    [("Customer retention cohorts (% of cohort ordering)", 12, 34)],
     [("Conversion funnel", 5, 55), ("Conversion rate by region", 7, 55)],
     [("Top 15 products by revenue", 7, 60), ("Revenue by category", 5, 60)],
 ]
@@ -135,7 +139,7 @@ def database_yaml():
     return {
         "database_name": DB_NAME, "sqlalchemy_uri": uri, "cache_timeout": None, "expose_in_sqllab": True,
         "allow_run_async": False, "allow_ctas": False, "allow_cvas": False, "allow_dml": False,
-        "allow_file_upload": False, "extra": "{}", "uuid": DB_UUID, "version": "1.0.0",
+        "allow_file_upload": False, "extra": {}, "uuid": DB_UUID, "version": "1.0.0",
     }
 
 
@@ -183,7 +187,9 @@ def dashboard_yaml():
             position[row_id]["children"].append(chart_id)
             position[chart_id] = {
                 "id": chart_id, "type": "CHART", "parents": ["ROOT_ID", "GRID_ID", row_id], "children": [],
-                "meta": {"uuid": stable_uuid(f"chart:{name}"), "sliceName": name, "width": width, "height": height},
+                # The importer swaps this placeholder chartId for the real one, matched by uuid.
+                "meta": {"chartId": r * 10 + c + 1, "uuid": stable_uuid(f"chart:{name}"), "sliceName": name,
+                         "width": width, "height": height},
             }
     return {
         "dashboard_title": "StreamCart: Business Intelligence", "description": None, "css": "", "slug": "streamcart-bi",

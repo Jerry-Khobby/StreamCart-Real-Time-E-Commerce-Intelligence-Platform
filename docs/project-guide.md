@@ -4,17 +4,7 @@ A full explanation of what StreamCart does, how the pipeline works, and what eac
 
 ## Read this first: the status of the project
 
-StreamCart is fully written but has never run from start to finish, so its behaviour is still unproven. Everything below describes what the code is designed to do. Treat each behaviour as a design until the end-to-end run confirms it.
-
-| Part | State |
-| --- | --- |
-| Code for all 9 requirement modules | Written and pushed |
-| `docker compose config` | Passes |
-| Platform image build | Built before two unused packages were removed; rebuild not confirmed |
-| Automated tests | Written, not yet run |
-| Pipeline, dashboards and fraud alerts | Not yet run |
-
-Some failures are likely on the first run, because this much new code hasn't been executed yet.
+StreamCart has run end to end from a clean install, and its results are listed under "Verified results" in the README. The data is simulated, so the fraud scores show that the pipeline works, not how it would perform on real fraud.
 
 ## Coming back to the project
 
@@ -206,7 +196,7 @@ The simulator is built to give every later stage real work to do. At its default
 | Duplicates | About 1% of orders are sent twice, as a retry would be |
 | Stock movement | Orders, restocks, damage write-offs and audit adjustments |
 
-On first start, a one-off service seeds 14 days of history at about 2,000 orders a day, so the batch dashboards have trends to show. Those events are flagged `is_backfill`.
+On first start, a one-off service seeds 14 days of history at about 1,000 orders a day, so the batch dashboards have trends to show. Those events are flagged `is_backfill`.
 
 ### 2. Ingestion
 
@@ -346,7 +336,7 @@ If you can explain why each of these choices was made and what it costs, you und
 | --- | --- | --- |
 | The Silver DAG wouldn't import | The Spark provider and `pyspark` weren't installed, and `master=` isn't a valid argument | Installed both and removed the argument |
 | Python version mismatch | The driver ran on Airflow's Python and workers on the Spark image's | One shared image for Airflow and Spark |
-| The batch job would wait forever | A streaming job takes every Spark core by default | Capped Bronze at 2 of 4 cores, and allowed one batch job at a time through an Airflow pool |
+| The batch job would wait forever | A streaming job takes every Spark core by default | Capped Bronze at 1 of 3 cores, and allowed one batch job at a time through an Airflow pool |
 | Executors couldn't reach the driver | The driver ran inside the scheduler container without a resolvable name | Set `spark.driver.host` to the scheduler's service name |
 | Empty MinIO credentials | They came from Airflow Variables that were never set | Read them from the container's environment |
 | MinIO images unavailable | `minio/minio` and `minio/mc` can no longer be pulled | Switched to a pinned `bitnamilegacy/minio` image |
@@ -364,6 +354,22 @@ If you can explain why each of these choices was made and what it costs, you und
 | Stable session IDs | A hash of user and session start stays the same across runs | Each run must also read two hours of earlier events |
 | FX rates kept as history | Orders convert at the rate when they were placed | Old orders need fixed fallback rates |
 | Velocity alert as a separate query | ksqlDB can't join a stream to a windowed table | One breach can emit several times, so the sink removes repeats |
+
+### Bugs that only a real run exposed
+
+These all passed code review and unit tests, and only showed up when the system ran. They make good stories, because each has a clear symptom, cause and fix.
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Gold stayed empty forever, while all 70 tests passed | On an empty table, `max()` is `NULL`, so the incremental filter matched nothing | `coalesce` the filter, and fail the DAG if Gold is empty while Silver has data |
+| Fresh events were rejected as being in the future, then lost | Age was measured from the job's start, but earlier tables take minutes, and the watermark moved past the rejected rows | Measure age when each table is read |
+| Live revenue was inflated by about $2M | The sink filtered bad timestamps but not injected $999,999 amounts | Apply Silver's amount bounds in the sink |
+| Retention always aborted | The default serializable isolation treats stream appends as a conflict | Snapshot isolation for the delete |
+| ksqlDB timed out writing its command topic | Kafka's transaction log defaults need 3 brokers | Set both to 1 for a single broker |
+| Some card testing bursts were missed | `SET` is per session, so one query started from `latest` | Set `earliest` in that file too |
+| Superset failed only on a fresh install | Postgres's temporary init server passed a socket healthcheck | Check health over TCP |
+| The whole stack stalled | Healthchecks started a JVM or Airflow process every few seconds, on top of high memory limits | Port checks, one webserver worker, lower heaps |
+| The sink crashed 12 times during a stall | A metric's Kafka timeout killed the service | Catch it and skip that sample |
 
 ### Bugs found in the original code
 
@@ -522,12 +528,12 @@ One-shot services run and exit, and later services wait for them:
 
 ## What happens when something fails
 
-Most failures recover by replaying data, because Kafka and Bronze keep it and the writes are upserts. Postgres is the main exception, since so much depends on it. This table describes the design, and none of these failures have been tested yet.
+Most failures recover by replaying data, because Kafka and Bronze keep it and the writes are upserts. Postgres is the main exception, since so much depends on it. The Silver gate, Bronze restart, Kafka restart and host sleep were tested live. The rest describe the design.
 
 | What fails | What happens | How it recovers |
 | --- | --- | --- |
 | A producer sends an event that breaks the contract | Serialisation fails, the generator exits and Docker restarts it | Fix the code or contract |
-| Bronze streaming job crashes | Nothing is written to Bronze, but events wait in Kafka for 7 days | Restarts up to 5 times, then resumes from its checkpoint. After that it needs a manual restart |
+| Bronze streaming job crashes | Nothing is written to Bronze, but events wait in Kafka for 7 days | Docker restarts it, and it resumes from its checkpoint |
 | Silver crashes mid-run | The watermark doesn't move | The next run rereads those rows, and `MERGE INTO` absorbs the repeats |
 | Silver quality gate fails | That table isn't written, its watermark stays put and the task fails, but other tables continue | Retries twice, and it stays blocked until the data or rule is fixed |
 | Postgres publish fails after the Iceberg merge | The upsert rolls back and the watermark doesn't move | The next run repeats the merge and the publish |
@@ -547,6 +553,7 @@ Most failures recover by replaying data, because Kafka and Bronze keep it and th
 - **Simple fraud rules:** fixed thresholds catch the simulated patterns, and no model has been trained. The API only serves features.
 - **Simulator state:** the stock ledger is held in memory, so stock levels reset when the generator restarts.
 - **Tied together:** the simulator writes to both Kafka and Postgres without a transaction, so they could briefly disagree.
+- **Heavy for one machine:** the full stack needs about 8 GB for Docker, so `COMPOSE_PROFILES` can run one layer at a time.
 - **Local credentials:** `.env.example` has development passwords, and Grafana and Superset use the Postgres admin account.
 - **Weather isn't used yet:** it's collected in `silver.weather_hourly`, but no Gold model uses it.
 
@@ -607,9 +614,10 @@ Try to answer each question aloud before reading the answer. If you can't, go ba
 | What is a retention cohort? | Customers grouped by the week of their first order, tracked across later weeks |
 | Why run dbt per layer, not per model? | Concurrent dbt runs would conflict over `target/`, and dbt already orders models within a layer |
 | Why one shared Docker image? | The driver and executors must share Python and Spark versions |
-| Why is Bronze capped at 2 cores? | Otherwise it takes all 4, and batch jobs wait forever for resources |
+| Why is Bronze capped at 1 core? | Otherwise it takes all 3, and batch jobs wait forever for resources |
 | What does the `spark_batch` pool do? | Allows one Spark batch job at a time on the single worker |
-| What triggers Gold? | A daily 03:00 UTC schedule, or the weekly backfill |
+| What triggers Gold? | A daily 03:00 UTC schedule, or the weekly backfill, which is paused on a fresh install |
+| How would you find out why a machine is slow? | Check the VM's memory, swap and pressure stall figures, then the biggest containers, before changing anything |
 | How are schema changes detected? | `observability_monitor` compares warehouse columns and Kafka contract versions against the last saved state |
 
 ### Judgement
@@ -625,7 +633,7 @@ Try to answer each question aloud before reading the answer. If you can't, go ba
 
 ## Learning it hands-on
 
-Once the stack runs, these experiments will teach you more than rereading will, because you'll see each behaviour happen. Each one tests a claim made in this guide. None has been run yet, so a command may need adjusting.
+These experiments will teach you more than rereading will, because you'll see each behaviour happen. Each one tests a claim made in this guide, and running them yourself is the best way to make the project your own.
 
 - [ ] **See an event in Kafka.** In the ksqlDB CLI, run `PRINT 'transactions' FROM BEGINNING LIMIT 3;`. Find the region and the partition.
 - [ ] **Watch fraud alerts arrive.** Run `SELECT * FROM fraud_alerts EMIT CHANGES;` in the ksqlDB CLI. Match each signal to its rule.
@@ -636,6 +644,6 @@ Once the stack runs, these experiments will teach you more than rereading will, 
 - [ ] **Break a contract.** Remove a required field from a schema in `schemas/avro` and run `docker compose up schema-init`. The registry should refuse it.
 - [ ] **Use time travel.** Query `lake.bronze.transactions` with `TIMESTAMP AS OF` an earlier time, and compare the count.
 - [ ] **Follow one order.** Pick a `transaction_id` and find it in `realtime.transactions`, `silver.transactions` and `gold.fct_orders`.
-- [ ] **Starve Spark on purpose.** Remove `spark.cores.max=2` from the Bronze job and watch the Silver job hang. That recreates part of the original blocker.
+- [ ] **Starve Spark on purpose.** Remove `spark.cores.max=1` from the Bronze job and watch the Silver job hang. That recreates part of the original blocker.
 
 The exact commands for common tasks are in [operations.md](operations.md).

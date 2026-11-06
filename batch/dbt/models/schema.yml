@@ -142,8 +142,7 @@ models:
       - name: stock_health
         tests:
           - accepted_values:
-              values:
-              ["Out of Stock", "Critical", "Low", "Healthy", "Overstocked"]
+              values: ["Out of Stock", "Critical", "Low", "Healthy", "Overstocked"]
 
   # ── Aggregates ───────────────────────────────────────────────────────────
   - name: agg_daily_revenue
