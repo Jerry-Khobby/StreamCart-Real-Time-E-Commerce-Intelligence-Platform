@@ -14,10 +14,11 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
-from common import SPARK_CONF, SPARK_POOL
+from common import SPARK_CONF, SPARK_POOL, record_failure
 
 default_args = {
     "owner": "streamcart",
+    "on_failure_callback": record_failure,
     "depends_on_past": False,
     "retries": 2,
     "retry_delay": timedelta(minutes=5),

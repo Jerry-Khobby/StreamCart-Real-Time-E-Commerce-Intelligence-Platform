@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
-from common import SPARK_CONF, SPARK_POOL
+from common import SPARK_CONF, SPARK_POOL, record_failure
 
 with DAG(
     dag_id="historical_backfill",
@@ -27,7 +27,7 @@ with DAG(
     max_active_runs=1,
     is_paused_upon_creation=True,
     params={"lookback_days": 7},
-    default_args={"owner": "streamcart", "retries": 1, "retry_delay": timedelta(minutes=10)},
+    default_args={"owner": "streamcart", "on_failure_callback": record_failure, "retries": 1, "retry_delay": timedelta(minutes=10)},
     tags=["backfill", "spark", "batch"],
 ) as dag:
 

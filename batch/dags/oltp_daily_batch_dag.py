@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
-from common import SPARK_CONF, SPARK_POOL
+from common import SPARK_CONF, SPARK_POOL, record_failure
 
 with DAG(
     dag_id="oltp_daily_batch",
@@ -17,7 +17,7 @@ with DAG(
     schedule_interval="30 0 * * *",  # 00:30 UTC, once yesterday is complete
     start_date=datetime(2025, 1, 1),
     catchup=False,
-    default_args={"owner": "streamcart", "retries": 2, "retry_delay": timedelta(minutes=5)},
+    default_args={"owner": "streamcart", "on_failure_callback": record_failure, "retries": 2, "retry_delay": timedelta(minutes=5)},
     tags=["bronze", "oltp", "spark", "batch"],
 ) as dag:
 

@@ -1,4 +1,6 @@
-"""Settings shared by the DAGs that submit Spark batch jobs."""
+"""Settings shared by the DAGs."""
+
+from datetime import datetime, timezone
 
 SPARK_CONF = {
     # Executors connect back to the driver, so it needs a resolvable name.
@@ -15,3 +17,23 @@ SPARK_CONF = {
 
 # Allows one batch job at a time on the single worker (created in airflow-init).
 SPARK_POOL = "spark_batch"
+
+
+def record_failure(context):
+    """
+    Record a task that has used up its retries, for the Grafana failure panel. A real
+    deployment would also page someone here. Never raises: a broken alert mustn't hide
+    the failure that caused it.
+    """
+    from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+    instance = context["task_instance"]
+    try:
+        PostgresHook(postgres_conn_id="streamcart_postgres").insert_rows(
+            "observability.pipeline_failures",
+            [(datetime.now(timezone.utc), instance.dag_id, instance.task_id, instance.run_id,
+              str(context.get("exception"))[:500])],
+            ["failed_at", "dag_id", "task_id", "run_id", "error"],
+        )
+    except Exception as exc:
+        print(f"Could not record the failure: {exc}")

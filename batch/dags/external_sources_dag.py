@@ -12,6 +12,7 @@ import requests
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
+from common import record_failure
 
 # A representative city per market
 MARKET_LOCATIONS = {
@@ -72,6 +73,7 @@ with DAG(
     catchup=False,
     default_args={
         "owner": "streamcart",
+        "on_failure_callback": record_failure,
         "retries": 3,
         "retry_delay": timedelta(minutes=2),
         "execution_timeout": timedelta(minutes=5),
