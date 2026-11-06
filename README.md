@@ -123,7 +123,7 @@ docker compose up -d --build
 
 ### Hardware
 
-The full stack is 22 services. It settles at about 4.6 GB of container memory, and peaks at about 6 GB while Spark batch jobs run. Allocate at least 8 GB to Docker, and keep Docker's disk on an SSD if you can. A cold start took about 20 minutes with Docker's disk on a USB hard drive.
+The full stack is 22 services. It settles at about 4.6 GB of container memory, and peaks at about 6 GB while Spark batch jobs run. Allocate at least 8 GB to Docker, and keep Docker's disk on an SSD if you can. A cold start took 20 to 40 minutes with Docker's disk on a USB hard drive, and should be much quicker on an SSD.
 
 ### Running only part of it
 
@@ -157,17 +157,17 @@ To run the tests and other day-to-day tasks, see [docs/operations.md](docs/opera
 
 ## Verified results
 
-Everything below was run against the live stack, starting from a clean install with empty volumes.
+Everything below was run against the live stack. The final code passed a clean install with empty volumes, and the fraud scores come from an earlier clean install with a longer live run.
 
 | Check | Result |
 | --- | --- |
 | Clean install with `docker compose up -d --build` | All 22 services start, exit code 0 |
-| Automated tests | 69 of 69 pass, and CI runs them on every push |
-| dbt | 15 models build, 116 of 116 tests pass |
+| Automated tests | 69 of 69 pass, and CI runs them on every push with lint, a dbt build on Postgres and image builds |
+| dbt | 15 models build, and all 112 tests pass, layer by layer from empty tables |
 | Silver on seeded history | 53,820 clickstream events in, 49,504 kept: bots and bad rows removed |
 | Quality gate | A tightened rule blocked the write, and the retry recovered those rows with no loss or duplicates |
 | Idempotency | After a full replay, row count equals distinct IDs |
-| Silver to Gold | 15,319 non-failed orders in Silver, 15,319 in `fct_orders` |
+| Silver to Gold | 13,793 non-failed orders in Silver, 13,793 in `fct_orders` |
 | Dead-letter table | Rejected rows are kept as JSON in `lake.silver.rejected_rows` |
 | Read-only login | Grafana, Superset and the API can read, and writes are denied |
 | Reconciliation | No orders missing from Silver across 7 complete seeded days |
