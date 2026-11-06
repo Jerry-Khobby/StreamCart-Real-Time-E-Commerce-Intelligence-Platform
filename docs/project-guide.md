@@ -361,6 +361,7 @@ These all passed code review and unit tests, and only showed up when the system 
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
+| Gold failed only on a fresh install | `dbt build --select dimensions` also ran foreign key tests from `fct_orders`, which didn't exist yet | `--indirect-selection buildable`, and CI now builds layer by layer on empty tables |
 | 68 orders had no customer key | Silver added orders between the dimension and fact builds, so their customers weren't in the dimension yet (a late-arriving dimension). A new `dbt build` test caught it | Hold those orders with an inner join. The 3-day window loads them on the next run |
 | A fresh install's read-only login would fail | Init scripts run alphabetically, so the grant ran before `silver_schema.sql` | Create the schema first, and run the scripts in order in CI |
 | Gold stayed empty forever, while all 70 tests passed | On an empty table, `max()` is `NULL`, so the incremental filter matched nothing | `coalesce` the filter, and fail the DAG if Gold is empty while Silver has data |

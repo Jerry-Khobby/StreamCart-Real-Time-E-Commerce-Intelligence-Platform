@@ -107,9 +107,13 @@ jobs:
         working-directory: batch/dbt
         run: dbt deps
       # Airflow can run Gold before Silver has data. Incremental models must survive that.
+      # Layer by layer on empty tables, exactly as gold_dbt_pipeline runs on a fresh install.
       - name: Build Gold on an empty Silver
         working-directory: batch/dbt
-        run: dbt build
+        run: |
+          for layer in staging dimensions facts aggregates; do
+            dbt build --select "$layer" --indirect-selection buildable
+          done
       - name: Load sample Silver rows
         run: psql -h localhost -U streamcart -d streamcart_db -v ON_ERROR_STOP=1 -f tests/fixtures/silver_sample.sql
       - name: Rebuild and test Gold

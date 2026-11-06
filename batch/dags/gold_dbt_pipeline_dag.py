@@ -42,7 +42,13 @@ GOLD_TABLES = [
 
 
 def build_layer(layer: str) -> BashOperator:
-    return BashOperator(task_id=f"dbt_build_{layer}", bash_command=f"{DBT_CMD} build --select {layer} {DBT_ARGS}")
+    # "buildable" holds a test back until every table it needs exists. Otherwise the
+    # dimensions layer runs fct_orders' foreign key tests before fct_orders is built,
+    # which fails on a fresh install.
+    return BashOperator(
+        task_id=f"dbt_build_{layer}",
+        bash_command=f"{DBT_CMD} build --select {layer} --indirect-selection buildable {DBT_ARGS}",
+    )
 
 
 def log_gold_row_counts():
