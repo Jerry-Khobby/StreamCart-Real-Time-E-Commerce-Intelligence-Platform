@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from pyspark.sql import SparkSession
 
+from consumer.lakehouse import SPARK_SAFETY_CONF
 from consumer.silver_processor import (
     clean_inventory, clean_transactions, deduplicate, filter_bots, normalise_currency,
     rejected_rows, stitch_sessions, with_event_age, with_user_known,
@@ -28,6 +29,11 @@ def spark():
 
 def clicks(spark, rows):
     return spark.createDataFrame(rows, "event_id string, session_id string, user_id string, event_time timestamp, user_agent string")
+
+
+def test_sessions_turn_off_the_cached_join_bug():
+    """Without this setting, Spark 3.5.0 MERGEs duplicate rows (SPARK-45282)."""
+    assert SPARK_SAFETY_CONF["spark.sql.optimizer.canChangeCachedPlanOutputPartitioning"] == "false"
 
 
 def test_filter_bots_drops_declared_bot_user_agents(spark):

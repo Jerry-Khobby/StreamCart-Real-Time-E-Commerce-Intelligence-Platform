@@ -27,7 +27,9 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql.window import Window
 
-from consumer.lakehouse import CATALOG, bucket, create_spark_session, jdbc_props, jdbc_url, merge_into
+from consumer.lakehouse import (
+    CATALOG, assert_unique, bucket, create_spark_session, jdbc_props, jdbc_url, merge_into,
+)
 from producer.logging_config import setup_logging
 from quality.validation import validate
 
@@ -413,6 +415,7 @@ def process_table(spark: SparkSession, table: str, known_users: DataFrame, fx_ra
     if rows_out:
         ensure_silver_table(spark, table, output)
         merge_into(spark, output, f"silver.{table}", key)
+        assert_unique(spark, f"silver.{table}", key)
         write_silver(output, spark, table, key)
 
     quarantine(spark, rejected_rows(raw, cleaned, key, table, run_at))
