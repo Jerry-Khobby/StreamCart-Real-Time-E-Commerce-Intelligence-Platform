@@ -32,7 +32,11 @@ Airflow, the Spark cluster and the Spark drivers all run from one image. PySpark
 
 ### Cores reserved for batch
 
-A streaming application takes every core in a Spark standalone cluster unless it's capped. The batch job would then wait forever with `Initial job has not accepted any resources`. The Bronze job is capped at 2 of the worker's 4 cores, and an Airflow pool lets one batch job use the rest at a time.
+A streaming application takes every core in a Spark standalone cluster unless it's capped. The batch job would then wait forever with `Initial job has not accepted any resources`. The Bronze job is capped at 1 of the worker's 3 cores, and an Airflow pool lets one batch job use the other 2 at a time.
+
+### Layers for smaller machines
+
+The full stack exhausted an 8 GB Docker VM at first: swap filled and load reached 119, with Docker's disk on a USB drive making it worse. Most of the waste was avoidable, so the fixes were cheaper healthchecks, one webserver worker, less DAG parsing and lower JVM heaps. It now settles at a load of about 5, and Compose profiles let you run one layer at a time.
 
 ### Iceberg's catalog lives in Postgres
 
@@ -95,4 +99,4 @@ One Postgres instance holds all of these, which keeps memory use practical on a 
 | `oltp_daily_batch` | Daily 00:30 | Extract orders, payments and users to Bronze |
 | `gold_dbt_pipeline` | Daily 03:00 | Build and test Gold |
 | `bronze_maintenance` | Daily 04:00 | Archive after 90 days, compact, expire snapshots |
-| `historical_backfill` | Sundays 02:00 | Replay 7 days through Silver, then rebuild Gold |
+| `historical_backfill` | Sundays 02:00 (paused on install) | Replay 7 days through Silver, then rebuild Gold |

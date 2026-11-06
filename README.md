@@ -4,7 +4,7 @@ A data lakehouse for a simulated global e-commerce company. One event stream ser
 
 **Stack:** Kafka, Schema Registry, ksqlDB, Spark Structured Streaming, Apache Iceberg, MinIO, Airflow, dbt, Great Expectations, PostgreSQL, Grafana, Superset, FastAPI, Docker Compose.
 
-> **Project status:** all modules are implemented, but the full stack has not yet completed an end-to-end run. See [Project status](#project-status) for what has been checked.
+> **Project status:** all modules are implemented and tested end to end from a clean install. See [Verified results](#verified-results).
 
 ## The problem
 
@@ -25,6 +25,22 @@ The business has three pain points, all caused by siloed, slow data:
 **Batch path (hourly and daily).** Spark streams Kafka into Bronze Iceberg tables on MinIO. An hourly Spark job validates and cleans that data into Silver, then publishes it to Postgres, where dbt builds the Gold star schema that Superset reads.
 
 For a full walkthrough of the project, see the [project guide](docs/project-guide.md). Design decisions and data flows are in [docs/architecture.md](docs/architecture.md).
+
+## Dashboards
+
+**Real-time operations (Grafana):** live orders, fraud alerts, inventory risk and pipeline lag.
+
+![Grafana real-time operations dashboard](docs/images/grafana-realtime.png)
+
+**Business intelligence (Superset):** revenue, retention cohorts, conversion funnel and top products.
+
+![Superset business intelligence dashboard](docs/images/superset-bi.png)
+
+**Pipeline observability (Grafana):** DAG reliability, row counts, freshness, data quality and schema changes.
+
+![Grafana pipeline observability dashboard](docs/images/grafana-observability.png)
+
+All data shown is simulated.
 
 ## What's in each layer
 
@@ -70,7 +86,7 @@ For a full walkthrough of the project, see the [project guide](docs/project-guid
 - dbt tests cover keys, accepted values, ranges and foreign key relationships.
 - The Grafana observability dashboard tracks DAG success rates, row counts, data freshness, quality results and schema changes.
 
-### Dashboards
+### Dashboards as code
 
 | Tool | Dashboard | Shows |
 | --- | --- | --- |
@@ -90,7 +106,7 @@ Interactive API docs are at `/docs`.
 
 ## Getting started
 
-You need Docker with Compose and at least 8 GB of memory allocated to Docker. The first build downloads several gigabytes.
+You need Docker with Compose. The first build downloads several gigabytes.
 
 ```bash
 git clone https://github.com/Jerry-Khobby/StreamCart-Real-Time-E-Commerce-Intelligence-Platform.git
@@ -99,7 +115,26 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-On first start, a one-shot service seeds 14 days of history and the live generator begins streaming. Gold is built daily at 03:00 UTC. To build it straight away, wait for one `silver_pipeline` run to finish, then trigger `gold_dbt_pipeline` in Airflow.
+### Hardware
+
+The full stack is 22 services. It settles at about 4.6 GB of container memory, and peaks at about 6 GB while Spark batch jobs run. Allocate at least 8 GB to Docker, and keep Docker's disk on an SSD if you can. A cold start took about 20 minutes with Docker's disk on a USB hard drive.
+
+### Running only part of it
+
+Set `COMPOSE_PROFILES` in `.env` to run just what you need. Kafka, Schema Registry, Postgres and the simulator always run.
+
+| Profile | Adds | Use it for |
+| --- | --- | --- |
+| `full` (default) | Everything | The whole platform |
+| `realtime` | ksqlDB, serving sink, REST API, Grafana | Fraud and stock alerts |
+| `batch` | MinIO, Spark, Bronze stream, Airflow, dbt | The lakehouse and Gold |
+| `bi` | Superset | Business dashboards, once `batch` has built Gold |
+
+Combine them with commas, such as `COMPOSE_PROFILES=realtime,batch`. Gold data stays in Postgres, so you can build it with `batch`, then stop that layer and browse it with `bi`.
+
+### After it starts
+
+A one-shot service seeds 14 days of history and the live generator begins streaming. Airflow starts its first Silver run automatically. Gold is built daily at 03:00 UTC. To build it straight away, wait for that Silver run to finish, then trigger `gold_dbt_pipeline` in Airflow.
 
 | Service | URL | Login |
 | --- | --- | --- |
@@ -114,22 +149,33 @@ If a port is already in use, change it in the host ports section of `.env`.
 
 To run the tests and other day-to-day tasks, see [docs/operations.md](docs/operations.md).
 
-## Project status
+## Verified results
 
-| Deliverable | Implemented | Checked so far |
-| --- | --- | --- |
-| Data simulator | Yes | Not yet run |
-| Kafka topics and Avro schemas | Yes | Not yet run |
-| Airflow DAGs (8) | Yes | Not yet run |
-| Lakehouse (Bronze, Silver, Gold) | Yes | Not yet run |
-| dbt models and tests | Yes | Not yet run |
-| Great Expectations suites | Yes | Not yet run |
-| Real-time fraud detection | Yes | Not yet run |
-| Grafana and Superset dashboards | Yes | Not yet run |
-| Observability dashboard | Yes | Not yet run |
-| Architecture diagram and docs | Yes | Diagram rendered and reviewed |
-| Docker Compose setup | Yes | `docker compose config` passes; image build in progress |
-| Automated tests | Yes | Not yet run |
+Everything below was run against the live stack, starting from a clean install with empty volumes.
+
+| Check | Result |
+| --- | --- |
+| Clean install with `docker compose up -d --build` | All 22 services start, exit code 0 |
+| Automated tests | 60 of 60 pass |
+| dbt | 15 models build, 86 of 86 tests pass |
+| Silver on seeded history | 53,820 clickstream events in, 49,504 kept: bots and bad rows removed |
+| Quality gate | A tightened rule blocked the write, and the retry recovered those rows with no loss or duplicates |
+| Idempotency | After a full replay, row count equals distinct IDs |
+| Account takeover detection | 7 of 7 orders caught |
+| Geo anomaly detection | 6 of 6 orders caught |
+| Card testing detection | 10 of 10 users caught |
+| False alarms | No alerts on users without injected fraud |
+| Event to serving table latency | About 1 second |
+| Schema contract | Registry refused an incompatible schema |
+| 90-day retention | Old rows moved to the archive bucket and left Bronze |
+| Time travel | An older Bronze snapshot returned its earlier row count |
+| Recovery | The stack resumed unaided after the host slept and after a Kafka restart |
+
+### Limits of these results
+
+- **The data is simulated.** The fraud rules were written for the patterns the simulator injects, so those scores show the pipeline works, not how it would perform on real fraud.
+- **The sample is small.** The fraud scores come from about 2,100 live orders.
+- **It's a single-machine setup.** One Kafka broker, one Spark worker and one Postgres instance, so nothing is highly available.
 
 ## Repository layout
 
