@@ -55,3 +55,22 @@ CREATE TABLE IF NOT EXISTS observability.schema_changes (
     change_kind TEXT NOT NULL,
     detail      TEXT NOT NULL
 );
+
+-- Tasks that failed after using up their retries, written by Airflow's failure callback.
+CREATE TABLE IF NOT EXISTS observability.pipeline_failures (
+    failed_at  TIMESTAMPTZ NOT NULL,
+    dag_id     TEXT NOT NULL,
+    task_id    TEXT NOT NULL,
+    run_id     TEXT NOT NULL,
+    error      TEXT,
+    PRIMARY KEY (failed_at, dag_id, task_id)
+);
+
+-- Daily comparison of the system of record against Silver.
+CREATE TABLE IF NOT EXISTS observability.reconciliation (
+    business_date DATE PRIMARY KEY,
+    oltp_orders   BIGINT NOT NULL,
+    silver_orders BIGINT NOT NULL,
+    missing_pct   DOUBLE PRECISION NOT NULL,
+    checked_at    TIMESTAMPTZ NOT NULL
+);

@@ -21,8 +21,9 @@ import psycopg2
 from psycopg2.extras import execute_values
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import (
-    abs as spark_abs, broadcast, coalesce, col, concat_ws, count, create_map, current_timestamp, first, lag, lit, md5,
-    max as spark_max, min as spark_min, row_number, sum as spark_sum, to_timestamp, unix_timestamp, when,
+    abs as spark_abs, broadcast, coalesce, col, concat_ws, count, create_map, first, lag, lit, md5,
+    max as spark_max, min as spark_min, row_number, struct, sum as spark_sum, to_json, to_timestamp,
+    unix_timestamp, when,
 )
 from pyspark.sql.window import Window
 
@@ -295,6 +296,33 @@ def clean_inventory(df: DataFrame) -> DataFrame:
     return deduplicate(cleaned, "event_id")
 
 
+def rejected_rows(raw: DataFrame, cleaned: DataFrame, key: str, table: str, run_at: datetime) -> DataFrame:
+    """
+    Rows that didn't reach Silver, kept whole as JSON so they can be inspected or replayed.
+    Duplicates of a kept row aren't included: their ID did reach Silver.
+    """
+    kept = cleaned.select(key).distinct()
+    return raw.join(kept, on=key, how="left_anti").select(
+        lit(run_at).cast("timestamp").alias("run_at"),
+        lit(table).alias("source_table"),
+        col(key).alias("record_key"),
+        to_json(struct("*")).alias("record"),
+    )
+
+
+def quarantine(spark: SparkSession, rows: DataFrame):
+    """Append rejected rows to a dead-letter table. They never block the good rows."""
+    identifier = f"{CATALOG}.silver.rejected_rows"
+    if not spark.catalog.tableExists(identifier):
+        (
+            rows.limit(0).writeTo(identifier).using("iceberg")
+            .partitionedBy(col("source_table"))
+            .tableProperty("write.parquet.compression-codec", "snappy")
+            .create()
+        )
+    rows.writeTo(identifier).append()
+
+
 # ---------------------------------------------------------------------------
 # Per-table run
 # ---------------------------------------------------------------------------
@@ -375,6 +403,8 @@ def process_table(spark: SparkSession, table: str, known_users: DataFrame, fx_ra
         write_silver(output, spark, table, key)
 
     if not lookback_days:
+        # A replay sees the same rows again, so only first-time runs quarantine.
+        quarantine(spark, rejected_rows(raw, cleaned, key, table, run_at))
         save_watermark(spark, table, new_rows.agg(spark_max("_ingested_at")).first()[0])
     record_run(run_at, table, rows_in, rows_out, "passed")
     logger.info(f"[{table}] in={rows_in:,} out={rows_out:,} rejected={rows_in - rows_out:,}")

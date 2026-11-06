@@ -25,6 +25,16 @@ docker compose exec airflow-scheduler airflow dags unpause historical_backfill
 docker compose exec airflow-scheduler python -m pytest tests -v
 ```
 
+CI runs these on every push, along with lint, a dbt build on Postgres, and image builds.
+
+## Inspect rejected rows
+
+Rows that didn't reach Silver are kept in `lake.silver.rejected_rows`:
+
+```sql
+SELECT source_table, record_key, record FROM lake.silver.rejected_rows WHERE source_table = 'transactions' LIMIT 10;
+```
+
 ## Trigger a DAG
 
 ```bash

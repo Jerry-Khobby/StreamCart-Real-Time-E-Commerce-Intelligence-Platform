@@ -9,6 +9,10 @@ sources:
     description: "Cleaned and validated Silver data, published from Iceberg to Postgres."
     database: "{{ env_var('POSTGRES_DB') }}"
     schema: silver
+    # Warn only: a laptop that has been asleep shouldn't fail the whole Gold build.
+    freshness:
+      warn_after: { count: 3, period: hour }
+    loaded_at_field: event_time
 
     tables:
       - name: transactions

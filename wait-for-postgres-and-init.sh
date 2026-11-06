@@ -22,4 +22,8 @@ airflow users create \
 # The Spark cluster has one worker: a pool keeps batch jobs from starving each other.
 airflow pools set spark_batch 1 "Serialises Spark batch jobs on the single worker"
 
+# Only the run history: Airflow's other tables hold connection details.
+PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    -v ON_ERROR_STOP=1 -c "GRANT SELECT ON public.dag_run TO \"$POSTGRES_READER_USER\""
+
 echo "Airflow bootstrap complete."

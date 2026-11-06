@@ -634,6 +634,96 @@
         }
       },
       "description": "Column changes in the warehouse and new versions of Kafka contracts."
+    },
+    {
+      "id": 12,
+      "title": "Task failures (after retries)",
+      "description": "Written by Airflow's failure callback when a task has used up its retries.",
+      "type": "table",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 38,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT failed_at, dag_id, task_id, left(error, 120) AS error FROM observability.pipeline_failures ORDER BY failed_at DESC LIMIT 20",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 13,
+      "title": "Reconciliation: OLTP orders vs Silver",
+      "description": "About 1% missing is expected: the simulator corrupts that share of events in the stream only.",
+      "type": "table",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 38,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT business_date, oltp_orders, silver_orders, missing_pct FROM observability.reconciliation ORDER BY business_date DESC LIMIT 14",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
     }
   ]
 }

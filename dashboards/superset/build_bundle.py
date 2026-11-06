@@ -134,7 +134,8 @@ LAYOUT = [
 
 def database_yaml():
     uri = "postgresql+psycopg2://{u}:{p}@postgres:5432/{d}".format(
-        u=os.environ["POSTGRES_USER"], p=os.environ["POSTGRES_PASSWORD"], d=os.environ["POSTGRES_DB"]
+        # Charts only read, so they use the read-only login.
+        u=os.environ["POSTGRES_READER_USER"], p=os.environ["POSTGRES_READER_PASSWORD"], d=os.environ["POSTGRES_DB"]
     )
     return {
         "database_name": DB_NAME, "sqlalchemy_uri": uri, "cache_timeout": None, "expose_in_sqllab": True,

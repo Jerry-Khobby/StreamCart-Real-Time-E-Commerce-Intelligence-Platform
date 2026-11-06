@@ -5,6 +5,7 @@ Every 15 minutes, samples pipeline health into the observability schema:
   - row counts per table
   - data freshness per table
   - schema changes, in warehouse columns and in Kafka contracts
+  - reconciliation: does Silver hold the orders the system of record says exist?
 
 The Grafana observability dashboard reads these, alongside Airflow's own dag_run table.
 """
@@ -17,6 +18,7 @@ import requests
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
+from common import record_failure
 
 SCHEMA_REGISTRY = "http://schema-registry:8081"
 
@@ -80,6 +82,29 @@ def sample_counts_and_freshness():
     pg.insert_rows("observability.row_counts", counts, ["sampled_at", "table_name", "row_count"])
     pg.insert_rows("observability.freshness", freshness, ["sampled_at", "table_name", "latest_at", "age_seconds"])
     print(f"Sampled {len(counts)} tables")
+
+
+def reconcile_orders():
+    """
+    Compare each recent complete day in the OLTP database against Silver. A small gap is
+    expected, because the simulator corrupts about 1% of events in the stream only.
+    """
+    pg = hook()
+    pg.run("""
+        INSERT INTO observability.reconciliation
+            (business_date, oltp_orders, silver_orders, missing_pct, checked_at)
+        SELECT o.day, o.orders, coalesce(s.orders, 0),
+               round(100.0 * greatest(o.orders - coalesce(s.orders, 0), 0) / o.orders, 2), now()
+        FROM (SELECT created_at::date AS day, count(*) AS orders FROM oltp.orders
+              WHERE created_at::date BETWEEN current_date - 7 AND current_date - 1 GROUP BY 1) o
+        LEFT JOIN (SELECT event_time::date AS day, count(*) AS orders FROM silver.transactions
+                   GROUP BY 1) s USING (day)
+        ON CONFLICT (business_date) DO UPDATE SET
+            oltp_orders = EXCLUDED.oltp_orders,
+            silver_orders = EXCLUDED.silver_orders,
+            missing_pct = EXCLUDED.missing_pct,
+            checked_at = EXCLUDED.checked_at
+    """)
 
 
 def current_definitions(pg) -> dict:
@@ -155,9 +180,10 @@ with DAG(
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,
-    default_args={"owner": "streamcart", "retries": 1, "retry_delay": timedelta(minutes=1)},
+    default_args={"owner": "streamcart", "on_failure_callback": record_failure, "retries": 1, "retry_delay": timedelta(minutes=1)},
     tags=["observability"],
 ) as dag:
 
     PythonOperator(task_id="sample_counts_and_freshness", python_callable=sample_counts_and_freshness)
     PythonOperator(task_id="detect_schema_changes", python_callable=detect_schema_changes)
+    PythonOperator(task_id="reconcile_orders", python_callable=reconcile_orders)

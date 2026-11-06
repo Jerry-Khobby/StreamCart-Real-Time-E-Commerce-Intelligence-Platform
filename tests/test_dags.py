@@ -39,9 +39,14 @@ def test_dag_exists_with_schedule(dagbag, dag_id, schedule):
     assert dagbag.dags[dag_id].schedule_interval == schedule
 
 
+@pytest.mark.parametrize("dag_id", EXPECTED)
+def test_every_dag_records_failures(dagbag, dag_id):
+    assert dagbag.dags[dag_id].default_args["on_failure_callback"].__name__ == "record_failure"
+
+
 def test_gold_runs_layers_in_dependency_order(dagbag):
     dag = dagbag.dags["gold_dbt_pipeline"]
-    order = ["dbt_deps", "dbt_source_test", "dbt_run_staging", "dbt_run_dimensions",
-             "dbt_run_facts", "dbt_run_aggregates", "dbt_test_gold", "log_gold_counts"]
+    order = ["dbt_deps", "dbt_source_test", "dbt_source_freshness", "dbt_build_staging", "dbt_build_dimensions",
+             "dbt_build_facts", "dbt_build_aggregates", "log_gold_counts"]
     for upstream, downstream in zip(order, order[1:]):
         assert downstream in dag.get_task(upstream).downstream_task_ids

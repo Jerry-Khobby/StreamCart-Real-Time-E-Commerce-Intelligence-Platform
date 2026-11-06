@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
-from common import SPARK_CONF, SPARK_POOL
+from common import SPARK_CONF, SPARK_POOL, record_failure
 
 with DAG(
     dag_id="bronze_maintenance",
@@ -17,7 +17,7 @@ with DAG(
     schedule_interval="0 4 * * *",  # 04:00 UTC, after the Gold build
     start_date=datetime(2025, 1, 1),
     catchup=False,
-    default_args={"owner": "streamcart", "retries": 1, "retry_delay": timedelta(minutes=10)},
+    default_args={"owner": "streamcart", "on_failure_callback": record_failure, "retries": 1, "retry_delay": timedelta(minutes=10)},
     tags=["bronze", "maintenance", "spark"],
 ) as dag:
 

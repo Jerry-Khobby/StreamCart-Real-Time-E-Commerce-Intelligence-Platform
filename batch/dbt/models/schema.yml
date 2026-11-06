@@ -4,6 +4,38 @@
 version: 2
 
 models:
+  # ── Staging ─────────────────────────────────────────────────────────────
+  - name: stg_transactions
+    description: "Silver orders with canonical names. Failed orders are excluded."
+    columns:
+      - name: transaction_id
+        tests: [unique, not_null]
+      - name: amount_usd
+        description: "Amount converted at the rate in force when the order was placed."
+        tests: [not_null]
+      - name: order_status
+        tests:
+          - accepted_values:
+              values: ["completed", "pending", "refunded"]
+
+  - name: stg_clickstream
+    description: "Silver clickstream events, using the stitched session ID."
+    columns:
+      - name: event_id
+        tests: [unique, not_null]
+      - name: session_id
+        tests: [not_null]
+
+  - name: stg_inventory
+    description: "Silver stock movements with their direction classified."
+    columns:
+      - name: event_id
+        tests: [unique, not_null]
+      - name: movement_direction
+        tests:
+          - accepted_values:
+              values: ["inbound", "outbound", "neutral"]
+
   # ── Dimensions ──────────────────────────────────────────────────────────
   - name: dim_customers
     description: "One row per customer with lifetime value and segmentation."
