@@ -7,7 +7,7 @@ from pyspark.sql import SparkSession
 
 from consumer.silver_processor import (
     clean_inventory, clean_transactions, deduplicate, filter_bots, normalise_currency,
-    stitch_sessions, with_event_age, with_user_known,
+    rejected_rows, stitch_sessions, with_event_age, with_user_known,
 )
 
 T0 = datetime(2026, 11, 1, 12, 0, 0)
@@ -174,6 +174,17 @@ def test_explicit_backfill_is_exempt_from_the_age_limit(spark, now):
 
 def test_clean_transactions_keeps_good_rows(spark, now):
     assert run_clean(spark, now, [{}, {}, {"currency": "XXX"}]).count() == 2
+
+
+def test_rejected_rows_keeps_bad_rows_but_not_duplicates_of_good_ones(spark):
+    raw = spark.createDataFrame(
+        [("good", "a"), ("good", "duplicate"), ("bad", "b"), (None, "null key")], "event_id string, note string"
+    )
+    cleaned = spark.createDataFrame([("good", "a")], "event_id string, note string")
+    rows = rejected_rows(raw, cleaned, "event_id", "inventory", T0).collect()
+    assert sorted(str(r.record_key) for r in rows) == ["None", "bad"]
+    assert all(r.source_table == "inventory" for r in rows)
+    assert any('"note":"b"' in r.record for r in rows)
 
 
 def test_clean_inventory_rejects_zero_delta_and_bad_type(spark, now):
