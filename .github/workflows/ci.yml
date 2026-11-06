@@ -89,11 +89,20 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install dbt-core==1.7.13 dbt-postgres==1.7.13
-      - name: Create the Silver schema
+      # In the same alphabetical order Postgres uses on a fresh install.
+      - name: Run the database init scripts
+        env:
+          POSTGRES_READER_USER: streamcart_reader
+          POSTGRES_READER_PASSWORD: streamcart_reader
+          PGHOST: localhost
         run: |
-          psql -h localhost -U streamcart -d streamcart_db -v ON_ERROR_STOP=1 \
-            -f batch/db/init/01_oltp_schema.sql \
-            -f batch/db/init/silver_schema.sql
+          for f in $(ls batch/db/init/* | LC_ALL=C sort); do
+            echo "--- $f"
+            case "$f" in
+              *.sql) psql -U streamcart -d streamcart_db -v ON_ERROR_STOP=1 -q -f "$f" ;;
+              *.sh) bash "$f" ;;
+            esac
+          done
       - name: Install dbt packages
         working-directory: batch/dbt
         run: dbt deps
@@ -114,6 +123,14 @@ jobs:
           stock=$(psql -h localhost -U streamcart -d streamcart_db -Atc "SELECT count(*) FROM gold.fct_inventory_snapshots")
           echo "orders=$orders sessions=$sessions stock=$stock"
           test "$orders" -eq 3 && test "$sessions" -eq 2 && test "$stock" -eq 2
+      - name: Check the read-only login can read but not write
+        env:
+          PGPASSWORD: streamcart_reader
+        run: |
+          psql -h localhost -U streamcart_reader -d streamcart_db -Atc "SELECT count(*) FROM gold.fct_orders"
+          if psql -h localhost -U streamcart_reader -d streamcart_db -c "DELETE FROM gold.fct_orders" 2>/dev/null; then
+            echo "The read-only login was able to delete"; exit 1
+          fi
       - name: Generate dbt docs
         working-directory: batch/dbt
         run: dbt docs generate
