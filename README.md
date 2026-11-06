@@ -166,7 +166,8 @@ Everything below was run against the live stack. The final code passed a clean i
 | dbt | 15 models build, and all 112 tests pass, layer by layer from empty tables |
 | Silver on seeded history | 53,820 clickstream events in, 49,504 kept: bots and bad rows removed |
 | Quality gate | A tightened rule blocked the write, and the retry recovered those rows with no loss or duplicates |
-| Idempotency | After a full replay, row count equals distinct IDs |
+| Idempotency | After two full replays, row count equals distinct IDs in both Iceberg and Postgres, and in the dead-letter table |
+| Reproducible replays | A row that arrived on time 30 days ago is still accepted, and one that arrived 30 days late stays rejected |
 | Silver to Gold | 13,793 non-failed orders in Silver, 13,793 in `fct_orders` |
 | Dead-letter table | Rejected rows are kept as JSON in `lake.silver.rejected_rows` |
 | Read-only login | Grafana, Superset and the API can read, and writes are denied |

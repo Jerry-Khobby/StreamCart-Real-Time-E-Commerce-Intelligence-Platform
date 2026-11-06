@@ -11,6 +11,8 @@ This is an honest checklist of StreamCart against common data engineering practi
 | Idempotent writes | Replaying the same rows changes nothing, through `MERGE INTO` and upserts | `consumer/lakehouse.py`, `consumer/realtime_sink.py` |
 | Safe incremental loads | The watermark moves only after a successful write, and tracks arrival time so late events are kept | `consumer/silver_processor.py` |
 | Replay from raw data | Bronze keeps events unmodified, so corrected rules can be rerun | `historical_backfill` DAG |
+| Reproducible replays | Age rules use arrival time, so a row gets the same answer whenever it's processed | `consumer/silver_processor.py` |
+| Idempotent dead-letter writes | Rejected rows have an ID from their Kafka position, so retries can't duplicate them | `consumer/silver_processor.py` |
 | Stream recovery | Checkpoints are in object storage, and the job restarts itself | `consumer/spark_streaming.py` |
 | At-least-once serving | Kafka offsets are committed only after the database commit | `consumer/realtime_sink.py` |
 | Retries and timeouts | Every DAG sets retries, and long tasks set an execution timeout | `batch/dags/` |
@@ -26,6 +28,7 @@ This is an honest checklist of StreamCart against common data engineering practi
 | Tests on every model | Keys, accepted values, ranges and foreign keys | `batch/dbt/models/schema.yml` |
 | Tests before downstream use | `dbt build` stops the next layer when a test fails | `gold_dbt_pipeline` DAG |
 | Row count guard | The DAG fails if Gold is empty while Silver has orders | `gold_dbt_pipeline` DAG |
+| Uniqueness guard | The Silver job fails if a merge leaves duplicate keys | `consumer/lakehouse.py` |
 | Reconciliation | A daily comparison of source orders with Silver | `observability_monitor` DAG |
 
 ### Observability

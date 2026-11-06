@@ -233,7 +233,7 @@ This is where data becomes trustworthy. It runs hourly, one table at a time:
 | Rule | How it works |
 | --- | --- |
 | Required fields | Key IDs, region and event time must be present |
-| Time range | No events over 5 minutes in the future or older than 7 days, except flagged history |
+| Time range | When it arrived, an event can't be over 5 minutes in the future or over 7 days old, except flagged history |
 | Valid currency | Must be one of the five market currencies |
 | Sensible amount | Above $0 and below $50,000 |
 | Known users | `user_id` must exist in `oltp.users` |
@@ -361,6 +361,9 @@ These all passed code review and unit tests, and only showed up when the system 
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
+| Iceberg Silver held about twice its real rows, while Postgres looked correct | Consistent with a Spark 3.5.0 bug (SPARK-45282): a join on cached data can lose matches, so `MERGE INTO` kept rows and inserted them again | Turn off `canChangeCachedPlanOutputPartitioning`, and fail the job if a merge leaves duplicate keys |
+| A replay would have rejected rows that passed the first time | The 7-day rule compared event time with the current time | Compare with arrival time, so the answer never changes |
+| Retries could duplicate rows in the dead-letter table | It was a plain append | Use an ID from the Kafka position, and `MERGE` |
 | Gold failed only on a fresh install | `dbt build --select dimensions` also ran foreign key tests from `fct_orders`, which didn't exist yet | `--indirect-selection buildable`, and CI now builds layer by layer on empty tables |
 | 68 orders had no customer key | Silver added orders between the dimension and fact builds, so their customers weren't in the dimension yet (a late-arriving dimension). A new `dbt build` test caught it | Hold those orders with an inner join. The 3-day window loads them on the next run |
 | A fresh install's read-only login would fail | Init scripts run alphabetically, so the grant ran before `silver_schema.sql` | Create the schema first, and run the scripts in order in CI |
@@ -608,6 +611,8 @@ Try to answer each question aloud before reading the answer. If you can't, go ba
 | What does `fx_discrepancy` mean? | The reported USD amount differs from the recalculated one by more than 1% |
 | How is a user checked as real? | A broadcast join against `oltp.users` |
 | Why are old events rejected, but seed data isn't? | Seed rows are flagged `is_backfill`, which leaves their event age null |
+| Why measure age against arrival time? | The answer never changes, so replaying old data gives the same result as the first run |
+| How do you know the merge really is idempotent? | The job checks that rows equal distinct keys after every merge. Checking only Postgres once hid a real duplicate bug in Iceberg |
 | Why does Silver write to Iceberg and Postgres? | Iceberg is the lakehouse copy, and Postgres is the copy dbt builds from |
 
 ### Modelling and orchestration
