@@ -44,11 +44,15 @@ x-airflow-env: &airflow-env
     AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "120"
     AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "300"
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    # Airflow, its tasks, dbt and the Spark jobs it submits use the application login,
+    # never the Postgres superuser (see migration V8).
+    POSTGRES_USER: ${POSTGRES_APP_USER:-streamcart_app}
+    POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-streamcart_app}
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_APP_USER:-streamcart_app}:${POSTGRES_APP_PASSWORD:-streamcart_app}@postgres:5432/${POSTGRES_DB}
     # Airflow connections used by the DAGs
     # The Spark hook builds --master from host:port, so the host carries the scheme.
     AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type": "spark", "host": "spark://spark-master", "port": 7077}'
-    AIRFLOW_CONN_STREAMCART_POSTGRES: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    AIRFLOW_CONN_STREAMCART_POSTGRES: postgres://${POSTGRES_APP_USER:-streamcart_app}:${POSTGRES_APP_PASSWORD:-streamcart_app}@postgres:5432/${POSTGRES_DB}
     # PostgreSQL
     POSTGRES_HOST: postgres
     POSTGRES_PORT: "5432"
@@ -98,6 +102,8 @@ x-producer-common: &producer-common
     SCHEMA_REGISTRY_URL: http://schema-registry:8081
     POSTGRES_HOST: postgres
     POSTGRES_PORT: "5432"
+    POSTGRES_USER: ${POSTGRES_APP_USER:-streamcart_app}
+    POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-streamcart_app}
   volumes:
     - ./producer:/opt/airflow/producer:ro
     - ./schemas:/opt/airflow/schemas:ro
@@ -117,6 +123,8 @@ services:
   # ══════════════════════════════════════════════════════════════════════════
 
   # ── PostgreSQL (Airflow metadata + application database) ─────────────────
+  # Three logins: the superuser (Postgres and migrations only), the application role
+  # (everything that writes) and the read-only role (dashboards and the API).
   postgres:
     image: postgres:15-alpine
     container_name: streamcart-postgres
@@ -157,6 +165,8 @@ services:
       FLYWAY_PASSWORD: ${POSTGRES_PASSWORD}
       FLYWAY_PLACEHOLDERS_READER_USER: ${POSTGRES_READER_USER}
       FLYWAY_PLACEHOLDERS_READER_PASSWORD: ${POSTGRES_READER_PASSWORD}
+      FLYWAY_PLACEHOLDERS_APP_USER: ${POSTGRES_APP_USER:-streamcart_app}
+      FLYWAY_PLACEHOLDERS_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-streamcart_app}
       # Databases created before Flyway was added already have Airflow's tables.
       FLYWAY_BASELINE_ON_MIGRATE: "true"
       FLYWAY_BASELINE_VERSION: "0"
@@ -431,6 +441,10 @@ services:
         --conf spark.sql.shuffle.partitions=2
         --conf spark.ui.enabled=false
         /opt/airflow/consumer/spark_streaming.py
+    # The Iceberg catalog in Postgres is reached with the application login.
+    environment:
+      POSTGRES_USER: ${POSTGRES_APP_USER:-streamcart_app}
+      POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-streamcart_app}
     # Always restart: the checkpoint resumes exactly where the stream stopped.
     restart: unless-stopped
 

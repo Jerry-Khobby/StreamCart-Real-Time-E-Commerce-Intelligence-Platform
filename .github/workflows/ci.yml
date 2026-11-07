@@ -78,8 +78,9 @@ jobs:
     env:
       POSTGRES_HOST: localhost
       POSTGRES_PORT: "5432"
-      POSTGRES_USER: streamcart
-      POSTGRES_PASSWORD: streamcart
+      # dbt runs as the application login, as in the stack; psql steps use the superuser.
+      POSTGRES_USER: streamcart_app
+      POSTGRES_PASSWORD: streamcart_app
       POSTGRES_DB: streamcart_db
       PGPASSWORD: streamcart
       DBT_PROFILES_DIR: ${{ github.workspace }}/batch/dbt
@@ -96,7 +97,7 @@ jobs:
         run: |
           docker run --rm --network host -v "$PWD/batch/db/migrations:/flyway/sql:ro" \
             -e FLYWAY_URL=jdbc:postgresql://localhost:5432/streamcart_db -e FLYWAY_USER=streamcart -e FLYWAY_PASSWORD=streamcart \
-            -e FLYWAY_PLACEHOLDERS_READER_USER=streamcart_reader -e FLYWAY_PLACEHOLDERS_READER_PASSWORD=streamcart_reader \
+            -e FLYWAY_PLACEHOLDERS_READER_USER=streamcart_reader -e FLYWAY_PLACEHOLDERS_READER_PASSWORD=streamcart_reader             -e FLYWAY_PLACEHOLDERS_APP_USER=streamcart_app -e FLYWAY_PLACEHOLDERS_APP_PASSWORD=streamcart_app \
             -e FLYWAY_BASELINE_ON_MIGRATE=true -e FLYWAY_BASELINE_VERSION=0 \
             flyway/flyway:10.20.1-alpine migrate
       # A second run must find nothing to do, as on every restart.
@@ -104,7 +105,7 @@ jobs:
         run: |
           docker run --rm --network host -v "$PWD/batch/db/migrations:/flyway/sql:ro" \
             -e FLYWAY_URL=jdbc:postgresql://localhost:5432/streamcart_db -e FLYWAY_USER=streamcart -e FLYWAY_PASSWORD=streamcart \
-            -e FLYWAY_PLACEHOLDERS_READER_USER=streamcart_reader -e FLYWAY_PLACEHOLDERS_READER_PASSWORD=streamcart_reader \
+            -e FLYWAY_PLACEHOLDERS_READER_USER=streamcart_reader -e FLYWAY_PLACEHOLDERS_READER_PASSWORD=streamcart_reader             -e FLYWAY_PLACEHOLDERS_APP_USER=streamcart_app -e FLYWAY_PLACEHOLDERS_APP_PASSWORD=streamcart_app \
             -e FLYWAY_BASELINE_ON_MIGRATE=true -e FLYWAY_BASELINE_VERSION=0 \
             flyway/flyway:10.20.1-alpine migrate
       - name: Install dbt packages
@@ -139,6 +140,14 @@ jobs:
           psql -h localhost -U streamcart_reader -d streamcart_db -Atc "SELECT count(*) FROM gold.fct_orders"
           if psql -h localhost -U streamcart_reader -d streamcart_db -c "DELETE FROM gold.fct_orders" 2>/dev/null; then
             echo "The read-only login was able to delete"; exit 1
+          fi
+      - name: Check the application login has no admin rights
+        env:
+          PGPASSWORD: streamcart_app
+        run: |
+          psql -h localhost -U streamcart_app -d streamcart_db -Atc "SELECT rolsuper, rolcreaterole, rolcreatedb FROM pg_roles WHERE rolname = current_user" | grep -qx 'f|f|f'
+          if psql -h localhost -U streamcart_app -d streamcart_db -c "CREATE ROLE intruder" 2>/dev/null; then
+            echo "The application login was able to create a role"; exit 1
           fi
       - name: Generate dbt docs
         working-directory: batch/dbt
