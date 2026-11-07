@@ -33,6 +33,7 @@ PRUNE = {
     "observability.schema_changes": ("detected_at", KEEP_AUDIT_DAYS),
     "observability.reconciliation": ("business_date", KEEP_AUDIT_DAYS),
     "observability.volume_checks": ("business_date", KEEP_AUDIT_DAYS),
+    "observability.fraud_evaluation": ("evaluated_at", KEEP_SAMPLES_DAYS),
 }
 
 

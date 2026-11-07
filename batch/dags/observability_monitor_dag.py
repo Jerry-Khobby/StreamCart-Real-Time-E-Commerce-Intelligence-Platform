@@ -7,6 +7,7 @@ Every 15 minutes, samples pipeline health into the observability schema:
   - schema changes, in warehouse columns and in Kafka contracts
   - reconciliation: does Silver hold the orders the system of record says exist?
   - volume: did yesterday bring in far less data than usual?
+  - fraud rules: precision and recall against the simulator's hidden labels
 
 The Grafana observability dashboard reads these, alongside Airflow's own dag_run table.
 """
@@ -146,6 +147,58 @@ def check_volumes():
         raise ValueError("Volume drop: " + "; ".join(newly_flagged))
 
 
+FRAUD_EVALUATION_SQL = """
+WITH window_orders AS (
+    -- Recent orders whose alerts have had time to arrive
+    SELECT transaction_id, user_id, is_fraud, fraud_type FROM realtime.transactions
+    WHERE event_time BETWEEN now() - interval '24 hours' AND now() - interval '10 minutes'
+      AND is_fraud IS NOT NULL
+),
+alerts AS (
+    SELECT DISTINCT transaction_id, user_id, fraud_signal FROM realtime.fraud_alerts
+    WHERE event_time BETWEEN now() - interval '24 hours' AND now() - interval '10 minutes'
+),
+-- Takeovers and geo anomalies are judged per order
+order_level AS (
+    SELECT s.signal,
+           count(*) FILTER (WHERE o.fraud_type = s.fraud_type AND a.transaction_id IS NOT NULL) AS tp,
+           count(*) FILTER (WHERE (o.fraud_type IS DISTINCT FROM s.fraud_type) AND a.transaction_id IS NOT NULL) AS fp,
+           count(*) FILTER (WHERE o.fraud_type = s.fraud_type AND a.transaction_id IS NULL) AS fn
+    FROM (VALUES ('HIGH_VALUE_NEW_SESSION', 'account_takeover'), ('GEO_ANOMALY', 'geo_anomaly')) s(signal, fraud_type)
+    CROSS JOIN window_orders o
+    LEFT JOIN alerts a ON a.transaction_id = o.transaction_id AND a.fraud_signal = s.signal
+    GROUP BY s.signal
+),
+-- Card testing is a pattern across orders, so velocity is judged per user
+users AS (
+    SELECT user_id, bool_or(fraud_type = 'card_testing') AS card_tester FROM window_orders GROUP BY user_id
+),
+velocity AS (
+    SELECT 'VELOCITY_BREACH'::text AS signal,
+           count(*) FILTER (WHERE u.card_tester AND v.user_id IS NOT NULL) AS tp,
+           count(*) FILTER (WHERE NOT u.card_tester AND v.user_id IS NOT NULL) AS fp,
+           count(*) FILTER (WHERE u.card_tester AND v.user_id IS NULL) AS fn
+    FROM users u
+    LEFT JOIN (SELECT DISTINCT user_id FROM alerts WHERE fraud_signal = 'VELOCITY_BREACH') v USING (user_id)
+)
+INSERT INTO observability.fraud_evaluation
+    (evaluated_at, fraud_signal, true_positives, false_positives, false_negatives, precision_pct, recall_pct)
+SELECT now(), signal, tp, fp, fn,
+       round(100.0 * tp / nullif(tp + fp, 0), 1), round(100.0 * tp / nullif(tp + fn, 0), 1)
+FROM (SELECT * FROM order_level UNION ALL SELECT * FROM velocity) scored
+"""
+
+
+def evaluate_fraud_rules():
+    """Score each real-time fraud rule against the simulator's labels over the last 24 hours."""
+    pg = hook()
+    pg.run(FRAUD_EVALUATION_SQL)
+    for row in pg.get_records("""
+        SELECT fraud_signal, true_positives, false_positives, false_negatives, precision_pct, recall_pct
+        FROM observability.fraud_evaluation WHERE evaluated_at = (SELECT max(evaluated_at) FROM observability.fraud_evaluation)"""):
+        print("%s: tp=%s fp=%s fn=%s precision=%s%% recall=%s%%" % row)
+
+
 def current_definitions(pg) -> dict:
     """Every watched table's columns and every Kafka contract, as comparable text."""
     definitions = {}
@@ -228,3 +281,4 @@ with DAG(
     PythonOperator(task_id="reconcile_orders", python_callable=reconcile_orders)
     # No retry: the check is deterministic, and the failure itself is the alert.
     PythonOperator(task_id="check_volumes", python_callable=check_volumes, retries=0)
+    PythonOperator(task_id="evaluate_fraud_rules", python_callable=evaluate_fraud_rules)

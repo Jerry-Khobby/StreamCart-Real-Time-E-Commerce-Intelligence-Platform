@@ -32,8 +32,8 @@ RETENTION = "48 hours"
 SQL = {
     "transactions": """
         INSERT INTO realtime.transactions
-            (transaction_id, user_id, region, amount_usd, status, event_time)
-        VALUES (%s, %s, %s, %s, %s, %s)
+            (transaction_id, user_id, region, amount_usd, status, event_time, is_fraud, fraud_type)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (transaction_id) DO NOTHING""",
     "fraud_alerts": """
         INSERT INTO realtime.fraud_alerts
@@ -86,8 +86,10 @@ def to_row(topic, event):
         amount = event["amount_usd"]
         if event["user_id"] is None or amount is None or not 0 < amount < MAX_AMOUNT_USD:
             return None
+        # The simulator's hidden labels, kept only to score the fraud rules.
         row = (event["transaction_id"], event["user_id"], event["region"],
-               event["amount_usd"], event["status"], event_time)
+               event["amount_usd"], event["status"], event_time,
+               bool(event.get("_is_fraud")), event.get("_fraud_type"))
     elif topic == "fraud_alerts":
         row = (event["TRANSACTION_ID"], event["FRAUD_SIGNAL"], event["USER_ID"],
                event["AMOUNT_USD"], event["REGION"], event_time)

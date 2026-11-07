@@ -49,6 +49,14 @@ DIRTY_RATE = float(os.getenv("DIRTY_RATE", "0.01"))
 # Share of clickstream sessions that are bots.
 BOT_RATE = 0.05
 
+# Hard cases, so the fraud rules are tested honestly rather than against fraud built to trip them.
+# Share of fraud scenarios crafted to slip under the rules' thresholds.
+EVASIVE_FRAUD_RATE = 0.3
+# Innocent orders that look suspicious: a customer ordering while abroad, or a returning
+# customer making a large purchase straight after logging in.
+TRAVELLER_RATE = 0.003
+QUICK_BIG_PURCHASE_RATE = 0.001
+
 shutdown_flag = threading.Event()
 
 
@@ -171,32 +179,60 @@ def generate_transaction(
     }
 
 
-def generate_fraud_scenario(ts: Optional[datetime] = None, is_backfill: bool = False) -> list[dict]:
+def generate_fraud_scenario(
+    ts: Optional[datetime] = None,
+    is_backfill: bool = False,
+    scenario: Optional[str] = None,
+    evasive: Optional[bool] = None,
+) -> list[dict]:
     """
-    A pre-placed fraud window, using the patterns the real-time layer must catch:
+    A pre-placed fraud window. Each scenario normally trips one real-time rule:
       card_testing      a burst of small charges from one user → VELOCITY_BREACH
       account_takeover  a very large order moments after login → HIGH_VALUE_NEW_SESSION
       geo_anomaly       an order from outside the user's market → GEO_ANOMALY
+
+    About 30% are evasive and slip under the rules, as real fraudsters adapt:
+      card_testing      no more than 10 charges spread over most of an hour
+      account_takeover  an amount just under the $5,000 threshold
+      geo_anomaly       routed through the customer's own market, as with a VPN
     """
     ts = ts or now_utc()
     user_id = random.choice(FRAUD_USER_POOL)
-    scenario = random.choice(["card_testing", "account_takeover", "geo_anomaly"])
+    scenario = scenario or random.choice(["card_testing", "account_takeover", "geo_anomaly"])
+    evasive = random.random() < EVASIVE_FRAUD_RATE if evasive is None else evasive
 
     if scenario == "card_testing":
+        count, spacing = (random.randint(6, 10), (240, 330)) if evasive else (random.randint(12, 18), (2, 10))
         return [
             generate_transaction(
-                ts - timedelta(seconds=i * random.uniform(2, 10)), is_backfill, user_id,
+                ts - timedelta(seconds=i * random.uniform(*spacing)), is_backfill, user_id,
                 amount_usd=random.uniform(0.99, 9.99), quantity=1, fraud_type=scenario,
             )
-            for i in range(random.randint(12, 18))
+            for i in range(count)
         ]
     if scenario == "account_takeover":
+        amount = random.uniform(3000, 4999) if evasive else random.uniform(5001, 15000)
         return [generate_transaction(
-            ts, is_backfill, user_id, amount_usd=random.uniform(5001, 15000),
+            ts, is_backfill, user_id, amount_usd=amount,
             session_age_seconds=random.uniform(3, 55), fraud_type=scenario,
         )]
-    foreign = random.choice([r for r in REGIONS if r != USER_HOME_REGION[user_id]])
-    return [generate_transaction(ts, is_backfill, user_id, ip_region=foreign, fraud_type=scenario)]
+    home = USER_HOME_REGION[user_id]
+    origin = home if evasive else random.choice([r for r in REGIONS if r != home])
+    return [generate_transaction(ts, is_backfill, user_id, ip_region=origin, fraud_type=scenario)]
+
+
+def generate_customer_order(ts: Optional[datetime] = None, is_backfill: bool = False) -> dict:
+    """An ordinary order. A small share look suspicious but are innocent: false alarms in waiting."""
+    roll = random.random()
+    if roll < TRAVELLER_RATE:
+        user_id = random.choice(USER_IDS)
+        abroad = random.choice([r for r in REGIONS if r != USER_HOME_REGION[user_id]])
+        return generate_transaction(ts, is_backfill, user_id, ip_region=abroad)
+    if roll < TRAVELLER_RATE + QUICK_BIG_PURCHASE_RATE:
+        return generate_transaction(
+            ts, is_backfill, amount_usd=random.uniform(5001, 9000), session_age_seconds=random.uniform(10, 55)
+        )
+    return generate_transaction(ts, is_backfill)
 
 
 def corrupt_transaction(event: dict) -> dict:
@@ -489,7 +525,7 @@ def stream_transactions(publisher, oltp, stock, tx_per_second: float):
     logger.info(f"[transactions] Streaming at up to {tx_per_second} tx/s")
     while not shutdown_flag.is_set():
         ts = now_utc()
-        emit_transaction(publisher, oltp, stock, generate_transaction(ts), ts)
+        emit_transaction(publisher, oltp, stock, generate_customer_order(ts), ts)
         shutdown_flag.wait(1.0 / (tx_per_second * demand_weight(ts)))
 
 
@@ -538,7 +574,7 @@ def backfill(publisher, oltp, stock, days: int = 14, tx_per_day: int = 2000):
 
         for _ in range(orders):
             ts = random_moment(day)
-            emit_transaction(publisher, oltp, stock, generate_transaction(ts, True), ts, True)
+            emit_transaction(publisher, oltp, stock, generate_customer_order(ts, True), ts, True)
         for _ in range(5):
             ts = random_moment(day)
             for tx in generate_fraud_scenario(ts, True):

@@ -604,6 +604,63 @@
           "sort": "desc"
         }
       }
+    },
+    {
+      "id": 11,
+      "title": "Fraud rule accuracy (last 24 hours)",
+      "type": "table",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "description": "Scored against the simulator's hidden labels. Some fraud is built to evade the rules and some innocent orders look suspicious, so neither figure should be 100%.",
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 24,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT fraud_signal, true_positives AS caught, false_positives AS false_alarms, false_negatives AS missed, precision_pct, recall_pct FROM observability.fraud_evaluation WHERE evaluated_at = (SELECT max(evaluated_at) FROM observability.fraud_evaluation) ORDER BY fraud_signal"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "precision_pct|recall_pct"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
     }
   ]
 }
