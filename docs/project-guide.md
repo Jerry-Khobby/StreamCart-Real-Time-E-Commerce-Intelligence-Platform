@@ -95,7 +95,7 @@ The easiest way to understand the system is to follow one order, split into two 
 
 ### By next morning: reporting
 
-1. At 03:00 UTC, dbt runs its source tests, then rebuilds the Gold tables.
+1. When Silver finishes, Airflow triggers dbt, which runs its source tests, then rebuilds the Gold tables.
 2. The order becomes a row in `fct_orders`, linked to its customer, product, date and region.
 3. Its value adds to the Africa total for that day in `agg_daily_revenue`.
 4. dbt tests the output, and the analyst sees the updated figure in Superset.
@@ -312,7 +312,7 @@ One Postgres instance holds all of these, which keeps memory use practical on on
 | `fx_rates_refresh` | Hourly | Appends exchange rates from open.er-api.com |
 | `external_sources` | Hourly at :05 | Fetches weather from Open-Meteo, and stock from the inventory API |
 | `oltp_daily_batch` | Daily 00:30 | Extracts orders, payments and users into Bronze |
-| `gold_dbt_pipeline` | Daily 03:00 | Builds and tests Gold |
+| `gold_dbt_pipeline` | When Silver is updated | Builds and tests Gold |
 | `bronze_maintenance` | Daily 04:00 | Archives after 90 days, compacts files, expires old snapshots |
 | `historical_backfill` | Sundays 02:00 | Replays 7 days through Silver, then rebuilds Gold |
 
@@ -628,7 +628,7 @@ Try to answer each question aloud before reading the answer. If you can't, go ba
 | Why one shared Docker image? | The driver and executors must share Python and Spark versions |
 | Why is Bronze capped at 1 core? | Otherwise it takes all 3, and batch jobs wait forever for resources |
 | What does the `spark_batch` pool do? | Allows one Spark batch job at a time on the single worker |
-| What triggers Gold? | A daily 03:00 UTC schedule, or the weekly backfill, which is paused on a fresh install |
+| What triggers Gold? | An update to Silver, from the hourly job or the weekly backfill (paused on a fresh install) |
 | How would you find out why a machine is slow? | Check the VM's memory, swap and pressure stall figures, then the biggest containers, before changing anything |
 | How are schema changes detected? | `observability_monitor` compares warehouse columns and Kafka contract versions against the last saved state |
 

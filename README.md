@@ -140,7 +140,7 @@ Combine them with commas, such as `COMPOSE_PROFILES=realtime,batch`. Gold data s
 
 ### After it starts
 
-A one-shot service seeds 14 days of history and the live generator begins streaming. Airflow starts its first Silver run automatically. Gold is built daily at 03:00 UTC. To build it straight away, wait for that Silver run to finish, then trigger `gold_dbt_pipeline` in Airflow.
+A one-shot service seeds 14 days of history and the live generator begins streaming. Airflow starts its first Silver run automatically. Gold rebuilds automatically each time Silver finishes, so the first Gold build follows the first Silver run.
 
 | Service | URL | Login |
 | --- | --- | --- |

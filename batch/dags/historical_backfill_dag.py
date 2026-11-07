@@ -2,8 +2,8 @@
 DAG: historical_backfill
 ========================
 Weekly reprocessing. Replays the last 7 days of Bronze through Silver, so rule fixes
-and late corrections reach the warehouse, then rebuilds Gold. MERGE INTO makes the
-replay idempotent.
+and late corrections reach the warehouse. MERGE INTO makes the replay idempotent.
+Updating Silver triggers a Gold rebuild through the Silver dataset.
 
 Trigger manually with {"lookback_days": 30} to replay a longer window.
 
@@ -14,13 +14,12 @@ repeat the work the first Silver run has just done. Unpause it to run weekly.
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
-from common import SPARK_CONF, SPARK_POOL, record_failure
+from common import SILVER_DATASET, SPARK_CONF, SPARK_POOL, record_failure
 
 with DAG(
     dag_id="historical_backfill",
-    description="Weekly Silver reprocessing of recent Bronze, followed by a Gold rebuild",
+    description="Weekly Silver reprocessing of recent Bronze",
     schedule_interval="0 2 * * 0",  # Sundays 02:00 UTC
     start_date=datetime(2025, 1, 1),
     catchup=False,
@@ -39,11 +38,5 @@ with DAG(
         pool=SPARK_POOL,
         conf=SPARK_CONF,
         execution_timeout=timedelta(hours=2),
+        outlets=[SILVER_DATASET],
     )
-
-    rebuild_gold = TriggerDagRunOperator(
-        task_id="rebuild_gold",
-        trigger_dag_id="gold_dbt_pipeline",
-    )
-
-    reprocess >> rebuild_gold

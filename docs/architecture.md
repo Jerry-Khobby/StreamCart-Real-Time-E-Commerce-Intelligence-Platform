@@ -97,6 +97,6 @@ One Postgres instance holds all of these, which keeps memory use practical on a 
 | `external_sources` | Hourly at :05 | Weather, and stock from the inventory API |
 | `observability_monitor` | Every 15 minutes | Row counts, freshness, schema changes |
 | `oltp_daily_batch` | Daily 00:30 | Extract orders, payments and users to Bronze |
-| `gold_dbt_pipeline` | Daily 03:00 | Build and test Gold |
+| `gold_dbt_pipeline` | When Silver is updated | Build and test Gold |
 | `bronze_maintenance` | Daily 04:00 | Archive after 90 days, compact, expire snapshots |
 | `historical_backfill` | Sundays 02:00 (paused on install) | Replay 7 days through Silver, then rebuild Gold |

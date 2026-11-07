@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
-from common import SPARK_CONF, SPARK_POOL, record_failure
+from common import SILVER_DATASET, SPARK_CONF, SPARK_POOL, record_failure
 
 default_args = {
     "owner": "streamcart",
@@ -42,5 +42,7 @@ with DAG(
         conn_id="spark_default",
         pool=SPARK_POOL,
         conf=SPARK_CONF,
+        # Marks Silver as updated, which triggers gold_dbt_pipeline.
+        outlets=[SILVER_DATASET],
         execution_timeout=timedelta(minutes=45),
     )

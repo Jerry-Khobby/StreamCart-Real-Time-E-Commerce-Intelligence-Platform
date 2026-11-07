@@ -13,7 +13,6 @@ DAG_FOLDER = os.getenv("DAG_FOLDER", str(DEFAULT_DAG_FOLDER))
 
 EXPECTED = {
     "silver_pipeline": "@hourly",
-    "gold_dbt_pipeline": "0 3 * * *",
     "fx_rates_refresh": "0 * * * *",
     "external_sources": "5 * * * *",
     "oltp_daily_batch": "30 0 * * *",
@@ -31,7 +30,7 @@ def dagbag():
 def test_no_import_errors(dagbag):
     assert dagbag.import_errors == {}
     # An empty or wrong folder also has no import errors, so check DAGs were found.
-    assert set(EXPECTED) <= set(dagbag.dags)
+    assert set(EXPECTED) | {"gold_dbt_pipeline"} <= set(dagbag.dags)
 
 
 @pytest.mark.parametrize("dag_id,schedule", EXPECTED.items())
@@ -39,9 +38,18 @@ def test_dag_exists_with_schedule(dagbag, dag_id, schedule):
     assert dagbag.dags[dag_id].schedule_interval == schedule
 
 
-@pytest.mark.parametrize("dag_id", EXPECTED)
+@pytest.mark.parametrize("dag_id", [*EXPECTED, "gold_dbt_pipeline"])
 def test_every_dag_records_failures(dagbag, dag_id):
     assert dagbag.dags[dag_id].default_args["on_failure_callback"].__name__ == "record_failure"
+
+
+def test_gold_runs_when_silver_is_updated(dagbag):
+    from common import SILVER_DATASET
+    gold = dagbag.dags["gold_dbt_pipeline"]
+    assert [d.uri for d in gold.dataset_triggers] == [SILVER_DATASET.uri]
+    for dag_id, task_id in [("silver_pipeline", "run_silver_processor"), ("historical_backfill", "reprocess_silver")]:
+        outlets = dagbag.dags[dag_id].get_task(task_id).outlets
+        assert [d.uri for d in outlets] == [SILVER_DATASET.uri]
 
 
 def test_gold_runs_layers_in_dependency_order(dagbag):
