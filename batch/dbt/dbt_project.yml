@@ -37,3 +37,4 @@ vars:
   velocity_max_orders_per_hour: 10
   card_test_max_amount_usd: 10
   card_test_min_small_orders: 5
+  wet_hour_min_precipitation_mm: 0.5
