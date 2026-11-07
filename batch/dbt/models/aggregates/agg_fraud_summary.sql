@@ -26,7 +26,7 @@ user_hourly_counts as (
         event_date,
         hour_of_day,
         count(transaction_id)   as tx_count_in_hour,
-        count(*) filter (where amount_usd < 10) as small_tx_count_in_hour,
+        count(*) filter (where amount_usd < {{ var('card_test_max_amount_usd') }}) as small_tx_count_in_hour,
         sum(amount_usd)         as hourly_spend_usd
     from orders
     group by user_id, event_date, hour_of_day
@@ -38,14 +38,14 @@ flagged_orders as (
         o.*,
 
         -- Signal 1: high-value order within 60 seconds of the session starting
-        coalesce(o.amount_usd > 5000 and o.session_age_seconds < 60, false)
+        coalesce(o.amount_usd > {{ var('high_value_usd') }} and o.session_age_seconds < {{ var('new_session_seconds') }}, false)
                                                         as flag_high_value,
 
         -- Signal 2: velocity breach, more than 10 orders by this user in the hour
-        uh.tx_count_in_hour > 10                        as flag_velocity,
+        uh.tx_count_in_hour > {{ var('velocity_max_orders_per_hour') }} as flag_velocity,
 
         -- Signal 3: card testing, a burst of small probing charges
-        o.amount_usd < 10 and uh.small_tx_count_in_hour >= 5
+        o.amount_usd < {{ var('card_test_max_amount_usd') }} and uh.small_tx_count_in_hour >= {{ var('card_test_min_small_orders') }}
                                                         as flag_card_testing,
 
         -- Signal 4: order placed from outside the customer's home market

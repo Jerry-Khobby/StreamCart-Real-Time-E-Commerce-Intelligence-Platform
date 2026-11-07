@@ -2,6 +2,8 @@
 
 from datetime import datetime, timezone
 
+from airflow.datasets import Dataset
+
 SPARK_CONF = {
     # Executors connect back to the driver, so it needs a resolvable name.
     # LocalExecutor runs every task in the scheduler container.
@@ -17,6 +19,10 @@ SPARK_CONF = {
 
 # Allows one batch job at a time on the single worker (created in airflow-init).
 SPARK_POOL = "spark_batch"
+
+# Updated whenever a Silver job succeeds. Gold is scheduled on it, so it builds from
+# fresh Silver data instead of at a fixed time that may come before Silver has finished.
+SILVER_DATASET = Dataset("postgres://postgres:5432/streamcart_db/silver")
 
 
 def record_failure(context):
@@ -37,3 +43,25 @@ def record_failure(context):
         )
     except Exception as exc:
         print(f"Could not record the failure: {exc}")
+
+
+# A day with under half its usual volume is flagged. Needs a few days of history first.
+VOLUME_DROP_RATIO = 0.5
+VOLUME_MIN_HISTORY_DAYS = 3
+
+
+def assess_volume(count: int, history: list) -> tuple:
+    """
+    Compare a day's row count with the median of the days before it.
+    Returns (baseline, ratio, flagged). The median ignores one unusual day in the history.
+    Only drops are flagged: a silent loss of data is the failure this exists to catch.
+    """
+    if len(history) < VOLUME_MIN_HISTORY_DAYS:
+        return None, None, False
+    ordered = sorted(history)
+    middle = len(ordered) // 2
+    baseline = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+    if not baseline:
+        return baseline, None, False
+    ratio = count / baseline
+    return baseline, round(ratio, 3), ratio < VOLUME_DROP_RATIO

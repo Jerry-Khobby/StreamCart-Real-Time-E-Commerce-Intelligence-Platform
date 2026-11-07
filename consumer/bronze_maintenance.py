@@ -7,6 +7,7 @@ Bronze retention and table maintenance, run daily.
   4. Expire old snapshots (time travel stays available for 7 days)
 
 Silver gets steps 3 and 4 as well. Its rows aren't archived, because Bronze can rebuild them.
+The dead-letter table keeps rejected rows for the same 90 days as Bronze.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -60,6 +61,13 @@ def main():
             compact_and_expire(spark, f"bronze.{table}", now)
         else:
             logger.info(f"[{table}] Bronze table not created yet: skipping")
+
+    dead_letter = f"{CATALOG}.silver.rejected_rows"
+    if spark.catalog.tableExists(dead_letter):
+        cutoff = (now - timedelta(days=RETENTION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+        spark.sql(f"ALTER TABLE {dead_letter} SET TBLPROPERTIES ('write.delete.isolation-level' = 'snapshot')")
+        spark.sql(f"DELETE FROM {dead_letter} WHERE run_at < TIMESTAMP '{cutoff}'")
+        logger.info(f"[rejected_rows] Removed rows older than {RETENTION_DAYS} days")
 
     for table in SILVER_TABLES:
         if spark.catalog.tableExists(f"{CATALOG}.silver.{table}"):

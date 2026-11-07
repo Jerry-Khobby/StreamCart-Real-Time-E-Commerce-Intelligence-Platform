@@ -95,7 +95,7 @@ The easiest way to understand the system is to follow one order, split into two 
 
 ### By next morning: reporting
 
-1. At 03:00 UTC, dbt runs its source tests, then rebuilds the Gold tables.
+1. When Silver finishes, Airflow triggers dbt, which runs its source tests, then rebuilds the Gold tables.
 2. The order becomes a row in `fct_orders`, linked to its customer, product, date and region.
 3. Its value adds to the Africa total for that day in `agg_daily_revenue`.
 4. dbt tests the output, and the analyst sees the updated figure in Superset.
@@ -191,6 +191,9 @@ The simulator is built to give every later stage real work to do. At its default
 | Card testing fraud | A burst of 12 to 18 small charges from one user |
 | Account takeover fraud | An order of $5,001 to $15,000 under 60 seconds into a session |
 | Geo anomaly fraud | An order from outside the customer's home market |
+| Fraud that evades the rules | About 30% of fraud: 6 to 10 small charges spread over most of an hour, takeovers of $3,000 to $4,999, and geo anomalies routed through the customer's own market (as with a VPN) |
+| Innocent orders that look like fraud | 0.3% of orders come from customers travelling abroad, and 0.1% are large purchases made straight after logging in |
+| Discount codes | 10% of orders carry a promo code, a field added in version 2 of the transactions contract |
 | Bot traffic | 5% of sessions. Half reveal a bot user agent and half pretend to be a browser |
 | Bad data | About 1% of orders get a fault: null or unknown user, bad amount, bad currency, or a bad timestamp |
 | Duplicates | About 1% of orders are sent twice, as a retry would be |
@@ -233,7 +236,7 @@ This is where data becomes trustworthy. It runs hourly, one table at a time:
 | Rule | How it works |
 | --- | --- |
 | Required fields | Key IDs, region and event time must be present |
-| Time range | No events over 5 minutes in the future or older than 7 days, except flagged history |
+| Time range | When it arrived, an event can't be over 5 minutes in the future or over 7 days old, except flagged history |
 | Valid currency | Must be one of the five market currencies |
 | Sensible amount | Above $0 and below $50,000 |
 | Known users | `user_id` must exist in `oltp.users` |
@@ -307,13 +310,14 @@ One Postgres instance holds all of these, which keeps memory use practical on on
 
 | DAG | Runs (UTC) | Purpose |
 | --- | --- | --- |
-| `observability_monitor` | Every 15 minutes | Records row counts and freshness, and detects schema changes |
+| `observability_monitor` | Every 15 minutes | Records row counts and freshness, detects schema changes and volume drops, and scores the fraud rules |
 | `silver_pipeline` | Hourly | Bronze to Silver |
 | `fx_rates_refresh` | Hourly | Appends exchange rates from open.er-api.com |
 | `external_sources` | Hourly at :05 | Fetches weather from Open-Meteo, and stock from the inventory API |
 | `oltp_daily_batch` | Daily 00:30 | Extracts orders, payments and users into Bronze |
-| `gold_dbt_pipeline` | Daily 03:00 | Builds and tests Gold |
-| `bronze_maintenance` | Daily 04:00 | Archives after 90 days, compacts files, expires old snapshots |
+| `gold_dbt_pipeline` | When Silver is updated | Builds and tests Gold |
+| `bronze_maintenance` | Daily 04:00 | Archives after 90 days, compacts files, expires old snapshots, prunes the dead-letter table |
+| `housekeeping` | Daily 04:30 | Prunes old monitoring samples, audit rows and Airflow's own history |
 | `historical_backfill` | Sundays 02:00 | Replays 7 days through Silver, then rebuilds Gold |
 
 ### Dashboards and API
@@ -361,6 +365,9 @@ These all passed code review and unit tests, and only showed up when the system 
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
+| Iceberg Silver held about twice its real rows, while Postgres looked correct | Consistent with a Spark 3.5.0 bug (SPARK-45282): a join on cached data can lose matches, so `MERGE INTO` kept rows and inserted them again | Turn off `canChangeCachedPlanOutputPartitioning`, and fail the job if a merge leaves duplicate keys |
+| A replay would have rejected rows that passed the first time | The 7-day rule compared event time with the current time | Compare with arrival time, so the answer never changes |
+| Retries could duplicate rows in the dead-letter table | It was a plain append | Use an ID from the Kafka position, and `MERGE` |
 | Gold failed only on a fresh install | `dbt build --select dimensions` also ran foreign key tests from `fct_orders`, which didn't exist yet | `--indirect-selection buildable`, and CI now builds layer by layer on empty tables |
 | 68 orders had no customer key | Silver added orders between the dimension and fact builds, so their customers weren't in the dimension yet (a late-arriving dimension). A new `dbt build` test caught it | Hold those orders with an inner join. The 3-day window loads them on the next run |
 | A fresh install's read-only login would fail | Init scripts run alphabetically, so the grant ran before `silver_schema.sql` | Create the schema first, and run the scripts in order in CI |
@@ -401,7 +408,7 @@ Kafka is an append-only log. A **topic** is a named log, split into **partitions
 
 Avro encodes data in binary using a schema, so messages are small and fields have fixed types. Schema Registry stores each schema with an ID. Each message starts with a 5-byte header, a marker byte plus that 4-byte ID, followed by the Avro data.
 
-- **Here:** that header is why `spark_streaming.py` uses `substring(value, 6, ...)` before decoding.
+- **Here:** Bronze reads the 4-byte ID from that header and decodes each message with the version it names, then resolves it to the latest version. That's how old and new events share one table.
 - **BACKWARD compatibility** means consumers on a new schema can read old data. Adding a field needs a default value.
 - **`auto.register.schemas: False`** stops producers from changing the contract by accident. Only `register_schemas.py` registers schemas.
 
@@ -502,7 +509,7 @@ Read the files in this order, because it follows the data from source to dashboa
 | `batch/dbt/models/staging/` | Views that rename and cast Silver columns | `stg_transactions.sql` |
 | `batch/dbt/models/dimensions/`, `facts/`, `aggregates/` | The Gold tables | `fct_orders.sql`, `agg_fraud_summary.sql` |
 | `batch/dbt/models/schema.yml` | dbt tests for Gold | The `fct_orders` section |
-| `batch/db/init/*.sql` | Creates the Postgres schemas on first start | `01_oltp_schema.sql` |
+| `batch/db/migrations/` | Flyway migrations for the Postgres schema | `V1__oltp_schema.sql`, `V5__readonly_role.sql` |
 
 ### Infrastructure and dashboards
 
@@ -552,12 +559,11 @@ Most failures recover by replaying data, because Kafka and Bronze keep it and th
 ### Known limitations
 
 - **One of everything:** one Kafka broker, one Spark worker and one Postgres, so nothing is highly available.
-- **Rules live in two places:** fraud rules in ksqlDB and `agg_fraud_summary` can drift apart.
-- **Simple fraud rules:** fixed thresholds catch the simulated patterns, and no model has been trained. The API only serves features.
+- **Simple fraud rules:** fixed thresholds, scored against hidden labels. They miss the fraud built to evade them and flag some innocent orders, and no model has been trained. The API only serves features.
 - **Simulator state:** the stock ledger is held in memory, so stock levels reset when the generator restarts.
 - **Tied together:** the simulator writes to both Kafka and Postgres without a transaction, so they could briefly disagree.
 - **Heavy for one machine:** the full stack needs about 8 GB for Docker, so `COMPOSE_PROFILES` can run one layer at a time.
-- **Local credentials:** `.env.example` has development passwords, and Grafana and Superset use the Postgres admin account.
+- **Local credentials:** `.env.example` has development passwords. Postgres has separate superuser, application and read-only logins, but MinIO is used with its root account, Kafka has no authentication, and Superset's own metadata uses the superuser.
 - **Weather isn't used yet:** it's collected in `silver.weather_hourly`, but no Gold model uses it.
 
 ## Questions to test yourself
@@ -600,6 +606,14 @@ Try to answer each question aloud before reading the answer. If you can't, go ba
 | How do you know no orders went missing? | A daily reconciliation compares `oltp.orders` with Silver |
 | What is a late-arriving dimension? | A fact that arrives before its dimension row. Here, those orders wait for the next run |
 | Why do dashboards have their own database login? | Least privilege: a dashboard or API bug can't change data |
+| Why doesn't the pipeline use the Postgres superuser? | A bug or a leaked password in Airflow or Spark could otherwise drop any database or create logins. The application role can only read and write the pipeline's schemas |
+| What happens when a Kafka contract gets a new version? | Bronze decodes each event with the version in its header and adds new fields as columns. A version registered while it runs stops the job once, and the restart loads it |
+| Where is each business rule defined? | In `quality/rules.py`. Copies that can't import Python (ksqlDB, dbt, Great Expectations) are checked against it by a test |
+| How do you know the fraud rules work? | The monitor scores precision and recall against hidden labels. The test set includes fraud built to evade the rules and innocent orders that look like fraud, so the scores aren't flattering |
+| Why convert to local time in Gold, not Silver? | Silver stays in UTC, which is unambiguous. A report about a market's day needs that market's calendar |
+| How does Gold know Silver has finished? | The Silver task updates an Airflow Dataset, and Gold is scheduled on that Dataset |
+| How is the database schema changed? | With a new Flyway migration, which runs once on every database, old or new |
+| How would you notice that data stopped arriving? | The volume check compares each day with the median of the week before, and freshness checks warn too |
 | Why validate twice? | The raw check measures input quality, and the clean check is the gate that blocks writes |
 | How is a bot detected? | A bot user agent, or 5+ events in a session averaging under 3 seconds apart |
 | Why not use a bot label from the simulator? | The filter would prove nothing, and real traffic has no such label |
@@ -608,6 +622,8 @@ Try to answer each question aloud before reading the answer. If you can't, go ba
 | What does `fx_discrepancy` mean? | The reported USD amount differs from the recalculated one by more than 1% |
 | How is a user checked as real? | A broadcast join against `oltp.users` |
 | Why are old events rejected, but seed data isn't? | Seed rows are flagged `is_backfill`, which leaves their event age null |
+| Why measure age against arrival time? | The answer never changes, so replaying old data gives the same result as the first run |
+| How do you know the merge really is idempotent? | The job checks that rows equal distinct keys after every merge. Checking only Postgres once hid a real duplicate bug in Iceberg |
 | Why does Silver write to Iceberg and Postgres? | Iceberg is the lakehouse copy, and Postgres is the copy dbt builds from |
 
 ### Modelling and orchestration
@@ -623,7 +639,7 @@ Try to answer each question aloud before reading the answer. If you can't, go ba
 | Why one shared Docker image? | The driver and executors must share Python and Spark versions |
 | Why is Bronze capped at 1 core? | Otherwise it takes all 3, and batch jobs wait forever for resources |
 | What does the `spark_batch` pool do? | Allows one Spark batch job at a time on the single worker |
-| What triggers Gold? | A daily 03:00 UTC schedule, or the weekly backfill, which is paused on a fresh install |
+| What triggers Gold? | An update to Silver, from the hourly job or the weekly backfill (paused on a fresh install) |
 | How would you find out why a machine is slow? | Check the VM's memory, swap and pressure stall figures, then the biggest containers, before changing anything |
 | How are schema changes detected? | `observability_monitor` compares warehouse columns and Kafka contract versions against the last saved state |
 
@@ -634,7 +650,7 @@ Try to answer each question aloud before reading the answer. If you can't, go ba
 | What's the weakest part? | Postgres does too many jobs, and every core component is a single instance |
 | What would you change for production? | Separate databases, a replicated Kafka, managed object storage, lake-based Gold, and alerts on failures |
 | How would it handle far more data? | Add Kafka partitions and Spark workers, and move Gold off Postgres to a lake query engine |
-| How would you improve fraud detection? | Train a model on the API's features, using the simulator's `_is_fraud` labels to score it |
+| How would you improve fraud detection? | Train a model on the API's features, using the simulator's `_is_fraud` labels, and compare its precision and recall with the rules' scores in `observability.fraud_evaluation` |
 | How would you stop bad Gold tables being seen? | Build to a staging schema, run the tests, then swap only if they pass |
 | Why not Flink? | The brief allows either, and ksqlDB expresses these rules in SQL. Flink would suit more complex stateful logic |
 

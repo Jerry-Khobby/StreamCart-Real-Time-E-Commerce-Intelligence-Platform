@@ -1,0 +1,6 @@
+region_code,region_name,super_region,local_currency,timezone
+US,United States,Americas,USD,America/New_York
+EU,Europe,EMEA,EUR,Europe/Berlin
+Asia,Asia Pacific,APAC,JPY,Asia/Singapore
+Africa,Africa,EMEA,NGN,Africa/Lagos
+LatAm,Latin America,Americas,BRL,America/Sao_Paulo

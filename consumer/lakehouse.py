@@ -6,6 +6,11 @@ from pyspark.sql import DataFrame, SparkSession
 
 CATALOG = "lake"
 
+# Spark 3.5.0 can lose join matches on cached data when adaptive execution changes its
+# partitioning (SPARK-45282). A MERGE from a cached DataFrame then kept and re-inserted
+# about half the rows it should have updated, with no error.
+SPARK_SAFETY_CONF = {"spark.sql.optimizer.canChangeCachedPlanOutputPartitioning": "false"}
+
 
 def bucket() -> str:
     return os.getenv("MINIO_BUCKET", "streamcart-data")
@@ -28,8 +33,11 @@ def jdbc_props() -> dict:
 
 def create_spark_session(app_name: str) -> SparkSession:
     props = jdbc_props()
+    builder = SparkSession.builder.appName(app_name)
+    for key, value in SPARK_SAFETY_CONF.items():
+        builder = builder.config(key, value)
     session = (
-        SparkSession.builder.appName(app_name)
+        builder
         .config("spark.sql.session.timeZone", "UTC")
         # MinIO through S3A
         .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
@@ -67,3 +75,10 @@ def merge_into(spark: SparkSession, df: DataFrame, table: str, key: str):
         WHEN MATCHED THEN UPDATE SET *
         WHEN NOT MATCHED THEN INSERT *
     """)
+
+
+def assert_unique(spark: SparkSession, table: str, key: str):
+    """Fail the run if a merge left duplicate keys: downstream numbers would be wrong."""
+    row = spark.sql(f"SELECT count(*) AS total, count(DISTINCT {key}) AS ids FROM {CATALOG}.{table}").first()
+    if row.total != row.ids:
+        raise ValueError(f"{table} has {row.total:,} rows but only {row.ids:,} distinct {key} values")

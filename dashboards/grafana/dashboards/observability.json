@@ -145,7 +145,7 @@
           "values": false
         }
       },
-      "description": "Gold refreshes daily, so up to about 25 hours is normal."
+      "description": "Gold rebuilds after each hourly Silver run, so up to about 2 hours is normal."
     },
     {
       "id": 3,
@@ -716,6 +716,86 @@
           }
         },
         "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 14,
+      "title": "Volume checks: yesterday against the usual",
+      "type": "table",
+      "datasource": {
+        "type": "postgres",
+        "uid": "streamcart-postgres"
+      },
+      "description": "Flagged when a Silver table gets under half the median of the 7 days before.",
+      "gridPos": {
+        "x": 0,
+        "y": 46,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "streamcart-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT business_date, table_name, row_count, round(baseline) AS usual, ratio, flagged FROM observability.volume_checks ORDER BY business_date DESC, table_name LIMIT 21"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "flagged"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "true": {
+                        "color": "red",
+                        "index": 0,
+                        "text": "DROP"
+                      },
+                      "false": {
+                        "color": "green",
+                        "index": 1,
+                        "text": "ok"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "showHeader": true,

@@ -22,6 +22,8 @@ data/
 *.parquet
 *.csv
 *.json
+# dbt seeds are reference data the models need, not generated data
+!batch/dbt/seeds/*.csv
 
 # Spark
 spark-warehouse/

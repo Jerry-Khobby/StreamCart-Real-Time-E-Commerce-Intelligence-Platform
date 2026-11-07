@@ -19,6 +19,7 @@ from confluent_kafka.serialization import MessageField, SerializationContext
 from psycopg2.extras import execute_batch
 
 from producer.logging_config import setup_logging
+from quality.rules import FUTURE_TOLERANCE_SECONDS, MAX_AMOUNT_USD, MAX_EVENT_AGE_SECONDS
 
 logger = setup_logging("realtime_sink")
 
@@ -27,13 +28,12 @@ FLUSH_SECONDS = 2.0
 LAG_SAMPLE_SECONDS = 30
 PRUNE_SECONDS = 3600
 RETENTION = "48 hours"
-MAX_AMOUNT_USD = 50_000
 
 SQL = {
     "transactions": """
         INSERT INTO realtime.transactions
-            (transaction_id, user_id, region, amount_usd, status, event_time)
-        VALUES (%s, %s, %s, %s, %s, %s)
+            (transaction_id, user_id, region, amount_usd, status, event_time, is_fraud, fraud_type)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (transaction_id) DO NOTHING""",
     "fraud_alerts": """
         INSERT INTO realtime.fraud_alerts
@@ -78,7 +78,7 @@ def to_row(topic, event):
     raw_time = event.get("EVENT_TIME") or event.get("timestamp")
     event_time = parse_time(raw_time)
     now = datetime.now(timezone.utc)
-    if event_time is None or not now - timedelta(days=7) <= event_time <= now + timedelta(minutes=5):
+    if event_time is None or not now - timedelta(seconds=MAX_EVENT_AGE_SECONDS) <= event_time <= now + timedelta(seconds=FUTURE_TOLERANCE_SECONDS):
         return None
 
     if topic == "transactions":
@@ -86,8 +86,10 @@ def to_row(topic, event):
         amount = event["amount_usd"]
         if event["user_id"] is None or amount is None or not 0 < amount < MAX_AMOUNT_USD:
             return None
+        # The simulator's hidden labels, kept only to score the fraud rules.
         row = (event["transaction_id"], event["user_id"], event["region"],
-               event["amount_usd"], event["status"], event_time)
+               event["amount_usd"], event["status"], event_time,
+               bool(event.get("_is_fraud")), event.get("_fraud_type"))
     elif topic == "fraud_alerts":
         row = (event["TRANSACTION_ID"], event["FRAUD_SIGNAL"], event["USER_ID"],
                event["AMOUNT_USD"], event["REGION"], event_time)

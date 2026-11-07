@@ -1,16 +1,8 @@
 -- models/dimensions/dim_regions.sql
--- Static region reference table.
--- In a real project this would be a seed CSV; here it's inline.
+-- One row per market, from the regions seed, with its activity totals.
 
 with regions as (
-    select *
-    from (values
-        ('US',     'United States', 'Americas',   'USD', 'America/New_York'),
-        ('EU',     'Europe',        'EMEA',        'EUR', 'Europe/Berlin'),
-        ('Asia',   'Asia Pacific',  'APAC',        'JPY', 'Asia/Singapore'),
-        ('Africa', 'Africa',        'EMEA',        'NGN', 'Africa/Lagos'),
-        ('LatAm',  'Latin America', 'Americas',   'BRL', 'America/Sao_Paulo')
-    ) as t(region_code, region_name, super_region, local_currency, timezone)
+    select * from {{ ref('regions') }}
 ),
 
 activity as (

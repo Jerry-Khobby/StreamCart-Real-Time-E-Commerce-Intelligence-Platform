@@ -88,6 +88,7 @@ All data shown is simulated.
 - Rows that fail are kept in a dead-letter table, so they can be inspected or replayed.
 - dbt tests cover keys, accepted values, ranges and foreign key relationships. A failed test stops the next layer from building.
 - A daily reconciliation compares source orders with Silver.
+- A volume check flags any day when a Silver table gets under half its usual rows.
 - The Grafana observability dashboard tracks DAG success rates, task failures, row counts, data freshness, quality results and schema changes.
 
 [docs/best-practices.md](docs/best-practices.md) lists which data engineering practices are in place, which are partial, and which are deliberately left out.
@@ -140,7 +141,7 @@ Combine them with commas, such as `COMPOSE_PROFILES=realtime,batch`. Gold data s
 
 ### After it starts
 
-A one-shot service seeds 14 days of history and the live generator begins streaming. Airflow starts its first Silver run automatically. Gold is built daily at 03:00 UTC. To build it straight away, wait for that Silver run to finish, then trigger `gold_dbt_pipeline` in Airflow.
+A one-shot service seeds 14 days of history and the live generator begins streaming. Airflow starts its first Silver run automatically. Gold rebuilds automatically each time Silver finishes, so the first Gold build follows the first Silver run.
 
 | Service | URL | Login |
 | --- | --- | --- |
@@ -166,12 +167,15 @@ Everything below was run against the live stack. The final code passed a clean i
 | dbt | 15 models build, and all 112 tests pass, layer by layer from empty tables |
 | Silver on seeded history | 53,820 clickstream events in, 49,504 kept: bots and bad rows removed |
 | Quality gate | A tightened rule blocked the write, and the retry recovered those rows with no loss or duplicates |
-| Idempotency | After a full replay, row count equals distinct IDs |
+| Idempotency | After two full replays, row count equals distinct IDs in both Iceberg and Postgres, and in the dead-letter table |
+| Reproducible replays | A row that arrived on time 30 days ago is still accepted, and one that arrived 30 days late stays rejected |
 | Silver to Gold | 13,793 non-failed orders in Silver, 13,793 in `fct_orders` |
 | Dead-letter table | Rejected rows are kept as JSON in `lake.silver.rejected_rows` |
 | Read-only login | Grafana, Superset and the API can read, and writes are denied |
 | Reconciliation | No orders missing from Silver across 7 complete seeded days |
 | Failure feed | A real failed task was recorded for Grafana |
+| Gold triggered by Silver | Gold started on its own when a Silver run finished |
+| Schema migrations | Flyway brought an existing database up to date, and a second run found nothing to do |
 | Account takeover detection | 7 of 7 orders caught |
 | Geo anomaly detection | 6 of 6 orders caught |
 | Card testing detection | 10 of 10 users caught |
@@ -193,7 +197,8 @@ Everything below was run against the live stack. The final code passed a clean i
 ```text
 api/                 FastAPI service for inventory and fraud features
 batch/dags/          Airflow DAGs
-batch/db/init/       Postgres schemas, applied on first start
+batch/db/init/       Creates the Superset database on first start
+batch/db/migrations/ Flyway migrations for the Postgres schema
 batch/dbt/           dbt project for the Gold layer
 consumer/            Spark jobs and the real-time serving sink
 dashboards/          Grafana and Superset dashboards as code

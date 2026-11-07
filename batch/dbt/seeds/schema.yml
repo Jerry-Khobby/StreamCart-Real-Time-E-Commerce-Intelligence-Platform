@@ -1,0 +1,10 @@
+version: 2
+
+seeds:
+  - name: regions
+    description: "The five markets, with the time zone their business day is reported in."
+    columns:
+      - name: region_code
+        tests: [unique, not_null]
+      - name: timezone
+        tests: [not_null]

@@ -74,11 +74,59 @@ Query a Bronze table as it was at an earlier time (Iceberg time travel), from a 
 SELECT count(*) FROM lake.bronze.transactions TIMESTAMP AS OF '2026-11-05 10:00:00';
 ```
 
+## Change the database schema
+
+Add a new versioned file to `batch/db/migrations`, then run `docker compose up db-migrate`. Never edit a migration that has already run. The folder's README has the details.
+
 ## Change a Kafka contract
 
 1. Edit the schema in `schemas/avro`. Give any new field a default, or the registry will reject the change as incompatible.
-2. Re-register it with `docker compose up schema-init`.
-3. The next `observability_monitor` run records the new version in the schema change log.
+2. Re-register it with `docker compose up schema-init`. The producers serialise with the latest registered version, so restart the simulator to pick up new fields.
+3. The Bronze job stops on the first event written with the new version and restarts by itself. On restart it adds any new fields as columns. Its log shows `added column`.
+4. The next `observability_monitor` run records the new version in the schema change log.
+5. To carry the field further, add it to `SILVER_COLUMNS` in `consumer/silver_processor.py` and to the Silver table with a migration.
+
+## Check the fraud rules' accuracy
+
+The monitor scores each rule every 15 minutes against the simulator's hidden labels. The Real-Time Operations dashboard shows the latest scores, or:
+
+```sql
+SELECT fraud_signal, true_positives, false_positives, false_negatives, precision_pct, recall_pct
+FROM observability.fraud_evaluation
+WHERE evaluated_at = (SELECT max(evaluated_at) FROM observability.fraud_evaluation);
+```
+
+Neither figure should reach 100%: some fraud is built to evade the rules, and some innocent orders look suspicious.
+
+## Retention
+
+| Data | Kept for | Removed by |
+| --- | --- | --- |
+| Bronze rows | 90 days, then copied to the archive bucket | `bronze_maintenance` |
+| Dead-letter rows | 90 days | `bronze_maintenance` |
+| Iceberg snapshots | 7 days of time travel | `bronze_maintenance` |
+| Row counts, freshness, quality results, fraud scores | 30 days | `housekeeping` |
+| Failures, Silver runs, schema changes, reconciliation, volume checks | 365 days | `housekeeping` |
+| Airflow run history and task logs | 30 days | `housekeeping` |
+| OLTP, Silver and Gold | Kept | They're the history the reports are built from |
+
+## After upgrading from a UTC-only Gold
+
+Gold now dates events in each market's local time. Incremental Gold tables built before that change keep their old UTC dates, so rebuild them once:
+
+```bash
+docker compose exec airflow-scheduler bash -c "cd /opt/airflow/dbt && dbt build --full-refresh"
+```
+
+## Database logins
+
+| Login | `.env` setting | Used by |
+| --- | --- | --- |
+| Superuser | `POSTGRES_USER` | Postgres and the migrations. Use it for admin work by hand |
+| Application | `POSTGRES_APP_USER` | Airflow, Spark, dbt, the simulator and the serving sink |
+| Read-only | `POSTGRES_READER_USER` | Grafana, Superset's Gold connection and the REST API |
+
+Migration V8 creates the application login and gives it the existing tables, so an older database is upgraded on the next start.
 
 ## Troubleshooting
 
@@ -90,4 +138,6 @@ SELECT count(*) FROM lake.bronze.transactions TIMESTAMP AS OF '2026-11-05 10:00:
 | A DAG fails right after a fresh start | A service it calls isn't up yet | It retries, and later runs pass |
 | Gold tests pass but dashboards are empty | Silver hadn't run yet | Check `gold.fct_orders`, then rerun `gold_dbt_pipeline` |
 | Empty Superset charts | Gold hasn't been built yet | Run `silver_pipeline`, then `gold_dbt_pipeline` |
-| Schema changes in `batch/db/init` have no effect | Those scripts only run when the Postgres volume is first created | Apply the change by hand, or recreate the volume, which deletes its data |
+| The Bronze job restarted with `schema ID ... which this job doesn't know yet` | A new contract version was registered | Nothing: it's expected once per new version, and the restart loads it |
+| `permission denied` from a pipeline task | A table was created by hand as the superuser | `ALTER TABLE ... OWNER TO streamcart_app`, or create it in a migration |
+| A service won't start and `db-migrate` exited with an error | A migration failed | Check `docker compose logs db-migrate`, fix the newest migration, and run `docker compose up db-migrate` |

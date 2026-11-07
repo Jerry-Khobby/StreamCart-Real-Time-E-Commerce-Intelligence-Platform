@@ -3,8 +3,8 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from pyspark.sql import SparkSession
 
+from consumer.lakehouse import SPARK_SAFETY_CONF
 from consumer.silver_processor import (
     clean_inventory, clean_transactions, deduplicate, filter_bots, normalise_currency,
     rejected_rows, stitch_sessions, with_event_age, with_user_known,
@@ -13,21 +13,13 @@ from consumer.silver_processor import (
 T0 = datetime(2026, 11, 1, 12, 0, 0)
 
 
-@pytest.fixture(scope="module")
-def spark():
-    session = (
-        SparkSession.builder.master("local[1]").appName("silver-tests")
-        .config("spark.sql.session.timeZone", "UTC")
-        .config("spark.sql.shuffle.partitions", "1")
-        .config("spark.ui.enabled", "false")
-        .getOrCreate()
-    )
-    yield session
-    session.stop()
-
-
 def clicks(spark, rows):
     return spark.createDataFrame(rows, "event_id string, session_id string, user_id string, event_time timestamp, user_agent string")
+
+
+def test_sessions_turn_off_the_cached_join_bug():
+    """Without this setting, Spark 3.5.0 MERGEs duplicate rows (SPARK-45282)."""
+    assert SPARK_SAFETY_CONF["spark.sql.optimizer.canChangeCachedPlanOutputPartitioning"] == "false"
 
 
 def test_filter_bots_drops_declared_bot_user_agents(spark):
@@ -143,7 +135,7 @@ def run_clean(spark, now, overrides_list):
     df = spark.createDataFrame(rows, TX_SCHEMA)
     known = spark.createDataFrame([("u1",)], "user_id string")
     fx = spark.createDataFrame([], "currency string, rate_to_usd double, fetched_at timestamp, source string")
-    prepared = with_user_known(with_event_age(df, now), known)
+    prepared = with_user_known(with_event_age(df), known)
     return clean_transactions(prepared, fx)
 
 
@@ -168,6 +160,18 @@ def test_clean_transactions_rejects_events_older_than_7_days(spark, now):
     assert run_clean(spark, now, [{"event_time": now - timedelta(days=10)}]).count() == 0
 
 
+def test_replaying_an_old_row_gives_the_same_answer_as_the_first_run(spark, now):
+    """It arrived on time 30 days ago, so a replay today must still accept it."""
+    long_ago = now - timedelta(days=30)
+    assert run_clean(spark, now, [{"event_time": long_ago, "_ingested_at": long_ago}]).count() == 1
+
+
+def test_an_event_that_arrived_too_late_stays_rejected_on_replay(spark, now):
+    long_ago = now - timedelta(days=30)
+    arrived_late = {"event_time": long_ago - timedelta(days=10), "_ingested_at": long_ago}
+    assert run_clean(spark, now, [arrived_late]).count() == 0
+
+
 def test_explicit_backfill_is_exempt_from_the_age_limit(spark, now):
     assert run_clean(spark, now, [{"event_time": now - timedelta(days=10), "is_backfill": True}]).count() == 1
 
@@ -176,15 +180,35 @@ def test_clean_transactions_keeps_good_rows(spark, now):
     assert run_clean(spark, now, [{}, {}, {"currency": "XXX"}]).count() == 2
 
 
+REJECT_SCHEMA = "event_id string, note string, _kafka_partition int, _kafka_offset long"
+
+
 def test_rejected_rows_keeps_bad_rows_but_not_duplicates_of_good_ones(spark):
     raw = spark.createDataFrame(
-        [("good", "a"), ("good", "duplicate"), ("bad", "b"), (None, "null key")], "event_id string, note string"
+        [("good", "a", 0, 1), ("good", "duplicate", 0, 2), ("bad", "b", 0, 3), (None, "null key", 0, 4)], REJECT_SCHEMA
     )
-    cleaned = spark.createDataFrame([("good", "a")], "event_id string, note string")
+    cleaned = spark.createDataFrame([("good", "a", 0, 1)], REJECT_SCHEMA)
     rows = rejected_rows(raw, cleaned, "event_id", "inventory", T0).collect()
     assert sorted(str(r.record_key) for r in rows) == ["None", "bad"]
     assert all(r.source_table == "inventory" for r in rows)
     assert any('"note":"b"' in r.record for r in rows)
+
+
+def test_rejection_id_is_stable_across_runs_so_retries_cannot_duplicate(spark):
+    raw = spark.createDataFrame([("bad", "b", 0, 3), (None, "null key", 0, 4)], REJECT_SCHEMA)
+    cleaned = spark.createDataFrame([], REJECT_SCHEMA)
+    first = rejected_rows(raw, cleaned, "event_id", "inventory", T0).collect()
+    retry = rejected_rows(raw, cleaned, "event_id", "inventory", T0 + timedelta(hours=1)).collect()
+    assert {r.rejection_id for r in first} == {r.rejection_id for r in retry}
+    assert len({r.rejection_id for r in first}) == 2
+
+
+def test_rejection_id_differs_between_tables_at_the_same_kafka_position(spark):
+    raw = spark.createDataFrame([("bad", "b", 0, 3)], REJECT_SCHEMA)
+    cleaned = spark.createDataFrame([], REJECT_SCHEMA)
+    one = rejected_rows(raw, cleaned, "event_id", "inventory", T0).first().rejection_id
+    other = rejected_rows(raw, cleaned, "event_id", "clickstream", T0).first().rejection_id
+    assert one != other
 
 
 def test_clean_inventory_rejects_zero_delta_and_bad_type(spark, now):
@@ -195,5 +219,5 @@ def test_clean_inventory_rejects_zero_delta_and_bad_type(spark, now):
         "event_id string, product_id string, warehouse_id string, region string, update_type string, "
         "quantity_delta int, stock_after int, event_time timestamp, is_backfill boolean, _ingested_at timestamp",
     )
-    kept = {r.event_id for r in clean_inventory(with_event_age(df, now)).collect()}
+    kept = {r.event_id for r in clean_inventory(with_event_age(df)).collect()}
     assert kept == {"e1"}

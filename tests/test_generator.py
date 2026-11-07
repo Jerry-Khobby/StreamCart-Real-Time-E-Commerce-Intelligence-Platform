@@ -43,19 +43,31 @@ def test_morning_peak_beats_the_small_hours():
     assert demand_weight(datetime(2026, 11, 4, 11)) > demand_weight(datetime(2026, 11, 4, 4))
 
 
-def test_every_fraud_scenario_would_trip_its_real_time_rule():
-    seen = set()
-    for _ in range(100):
-        events = generate_fraud_scenario()
-        kind = events[0]["_fraud_type"]
-        seen.add(kind)
-        if kind == "card_testing":
-            assert len(events) > 10 and len({e["user_id"] for e in events}) == 1
-        elif kind == "account_takeover":
-            assert events[0]["amount_usd"] > 5000 and events[0]["session_age_seconds"] < 60
-        else:
-            assert events[0]["ip_region"] != events[0]["region"]
-    assert seen == {"card_testing", "account_takeover", "geo_anomaly"}
+def test_detectable_fraud_trips_its_real_time_rule():
+    card = generate_fraud_scenario(scenario="card_testing", evasive=False)
+    assert len(card) > 10 and len({e["user_id"] for e in card}) == 1
+    takeover = generate_fraud_scenario(scenario="account_takeover", evasive=False)[0]
+    assert takeover["amount_usd"] > 5000 and takeover["session_age_seconds"] < 60
+    geo = generate_fraud_scenario(scenario="geo_anomaly", evasive=False)[0]
+    assert geo["ip_region"] != geo["region"]
+
+
+def test_evasive_fraud_stays_under_every_threshold():
+    card = generate_fraud_scenario(scenario="card_testing", evasive=True)
+    assert len(card) <= 10
+    assert generate_fraud_scenario(scenario="account_takeover", evasive=True)[0]["amount_usd"] < 5000
+    geo = generate_fraud_scenario(scenario="geo_anomaly", evasive=True)[0]
+    assert geo["ip_region"] == geo["region"]
+    assert all(e["_is_fraud"] for e in card)
+
+
+def test_some_innocent_orders_look_suspicious():
+    import producer.data_generator as g
+    orders = [g.generate_customer_order() for _ in range(20000)]
+    travellers = [o for o in orders if o["ip_region"] != o["region"]]
+    big_and_quick = [o for o in orders if o["amount_usd"] > 5000 and o["session_age_seconds"] < 60]
+    assert travellers and big_and_quick
+    assert not any(o["_is_fraud"] for o in travellers + big_and_quick)
 
 
 def test_sessions_never_contain_future_events():
