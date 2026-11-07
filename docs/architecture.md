@@ -80,6 +80,10 @@ Silver keeps UTC. Gold converts each event to its market's time zone, from the `
 | Application (`POSTGRES_APP_USER`) | Airflow, Spark, dbt, the simulator and the serving sink | Read and write the pipeline's schemas. It can't create roles or databases |
 | Read-only (`POSTGRES_READER_USER`) | Grafana, Superset's Gold connection and the REST API | Read only |
 
+### Weather drives demand
+
+`external_sources` stores each market's real weather hourly. The simulator reads the latest reading every 10 minutes, and a market with at least 0.5 mm of rain gets 25% more orders, on the idea that rain keeps people indoors and shopping online. `agg_weather_demand` then compares each hour's orders with that market's usual level for the same local hour, so the effect shows as a demand index above 1 on wet hours. The effect is simulated, so the table shows the pipeline can measure it, not that rain changes real demand.
+
 ### Fraud rules are scored against hidden labels
 
 The simulator labels the fraud it injects, and the labels travel with each order but are never used to raise an alert. About 30% of injected fraud is built to slip under the rules, and a small share of innocent orders look suspicious: customers ordering while abroad, and returning customers making a large purchase straight after logging in. Every 15 minutes the monitor compares the alerts with the labels and records each rule's precision and recall over the last 24 hours.
@@ -95,6 +99,7 @@ The requirements describe all fraud signals in one `CASE` expression. ksqlDB can
 | Gold zone in the lakehouse | Gold in Postgres, built by dbt | The dbt project targets Postgres, and Superset and Grafana query it directly. Bronze and Silver are in Iceberg. |
 | ksqlDB or Flink | ksqlDB only | The requirements allow either. |
 | A database, API and event stream as independent sources | One simulator produces orders for both Kafka and the OLTP database | This keeps the sources consistent with each other, as in a real storefront. |
+| An inventory system with its own REST API | `external_sources` pulls stock from this project's own API, which serves the stock levels the simulator streamed through Kafka | No separate inventory system exists to call. The pull still exercises a REST source with pagination and a snapshot table, but it isn't independent data, so it can't catch errors in the stream. |
 | `minio/minio` image | `bitnamilegacy/minio` | The official images can no longer be pulled from Docker Hub or Quay. The Bitnami image is frozen, so a long-lived deployment should plan a replacement. |
 
 ## Postgres schemas

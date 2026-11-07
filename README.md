@@ -48,9 +48,10 @@ All data shown is simulated.
 
 ### Data simulator
 
-[producer/data_generator.py](producer/data_generator.py) produces more than 50,000 orders a day across five markets (US, EU, Asia, Africa, LatAm), with:
+[producer/data_generator.py](producer/data_generator.py) produces more than 50,000 orders a day across five markets (US, EU, Asia, Africa, LatAm), on every day of the week, with:
 
 - Daily demand peaks, weekend dips and seasonal category weights
+- Demand that follows the real weather: a market where it's raining gets 25% more orders
 - Multi-currency pricing
 - Pre-placed fraud: card testing bursts, account takeovers and geo anomalies
 - Bot sessions, half of which spoof a browser user agent

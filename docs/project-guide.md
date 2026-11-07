@@ -17,7 +17,7 @@ The original build covered roughly the first half of the batch path, and work st
 | Simulator | JSON events through `kafka-python`, with fraud, bots and funnels | Same idea, rewritten: Avro, region partitions, stock tracking, injected bad data |
 | Bronze | Spark Streaming writing Parquet to MinIO, partitioned by region and date | Same stream and partitioning, now in Iceberg tables with durable checkpoints |
 | Silver | Spark job with cleaning rules, watermarks and a staging-table upsert to Postgres | Same structure and upsert. Added Great Expectations, Iceberg `MERGE INTO`, rate-based bot detection and historical FX |
-| dbt | All 11 Gold models, with staging and tests | Same models with their bugs fixed. One model added: `agg_customer_retention` |
+| dbt | All 11 Gold models, with staging and tests | Same models with their bugs fixed. Two models added: `agg_customer_retention` and `agg_weather_demand` |
 | Airflow | `silver_pipeline`, `gold_dbt_pipeline`, `fx_rates_refresh` | All three kept and fixed. Five DAGs added |
 | Compose | Postgres, MinIO, Zookeeper, Kafka, Airflow, Spark, generator | Same core, with one shared image and the new services |
 
@@ -181,7 +181,7 @@ The pipeline has seven stages, from generating events to showing them on a dashb
 
 Code: `producer/data_generator.py`, `producer/config.py`
 
-The simulator is built to give every later stage real work to do. At its default rate it's designed to produce more than 50,000 orders a day.
+The simulator is built to give every later stage real work to do. Its default peak of 1.4 orders a second gives more than 50,000 orders on every day of the week, about 52,600 on a Sunday and 75,000 on a weekday. Orders are timed against a schedule, so a slow send doesn't lower the rate.
 
 | Behaviour | How it's simulated |
 | --- | --- |
@@ -193,6 +193,7 @@ The simulator is built to give every later stage real work to do. At its default
 | Geo anomaly fraud | An order from outside the customer's home market |
 | Fraud that evades the rules | About 30% of fraud: 6 to 10 small charges spread over most of an hour, takeovers of $3,000 to $4,999, and geo anomalies routed through the customer's own market (as with a VPN) |
 | Innocent orders that look like fraud | 0.3% of orders come from customers travelling abroad, and 0.1% are large purchases made straight after logging in |
+| Weather | A market where it's raining (0.5 mm or more in the latest hourly reading) gets 25% more orders |
 | Discount codes | 10% of orders carry a promo code, a field added in version 2 of the transactions contract |
 | Bot traffic | 5% of sessions. Half reveal a bot user agent and half pretend to be a browser |
 | Bad data | About 1% of orders get a fault: null or unknown user, bad amount, bad currency, or a bad timestamp |
@@ -292,6 +293,7 @@ Gold is a star schema: fact tables record events, dimension tables describe them
 | `agg_inventory_health` | Aggregate | Warehouse and day | Which warehouses are at risk of running out? |
 | `agg_funnel_conversion` | Aggregate | Region and day | Where do visitors drop out before buying? |
 | `agg_customer_retention` | Aggregate | Weekly cohort and week | Do customers come back? |
+| `agg_weather_demand` | Aggregate | Market and hour | Does rain change demand? |
 
 ### Where data lives in Postgres
 
@@ -564,7 +566,8 @@ Most failures recover by replaying data, because Kafka and Bronze keep it and th
 - **Tied together:** the simulator writes to both Kafka and Postgres without a transaction, so they could briefly disagree.
 - **Heavy for one machine:** the full stack needs about 8 GB for Docker, so `COMPOSE_PROFILES` can run one layer at a time.
 - **Local credentials:** `.env.example` has development passwords. Postgres has separate superuser, application and read-only logins, but MinIO is used with its root account, Kafka has no authentication, and Superset's own metadata uses the superuser.
-- **Weather isn't used yet:** it's collected in `silver.weather_hourly`, but no Gold model uses it.
+- **Simulated effects:** weather really is fetched, but its effect on demand is built into the simulator, so `agg_weather_demand` shows that the pipeline can measure an effect, not that rain changes real demand.
+- **Inventory source isn't independent:** the inventory REST pull reads this project's own API, which serves stock the simulator streamed, so it can't catch errors in the stream.
 
 ## Questions to test yourself
 
@@ -577,6 +580,7 @@ Try to answer each question aloud before reading the answer. If you can't, go ba
 | What does the project do in one sentence? | It turns a simulated shop's events into live fraud and stock alerts, and into validated analytics tables |
 | Why two paths rather than one? | Alerts need seconds and reports need accuracy, and one pipeline optimises badly for both |
 | Is any of the data real? | No. Orders, clicks and stock are simulated. FX rates and weather come from real public APIs |
+| How does weather affect the data? | The simulator gives a market 25% more orders while it's raining there, and `agg_weather_demand` measures that against the usual demand for the same hour of day |
 | What is a lakehouse? | Cheap file storage with database features such as transactions and updates, here from Iceberg on MinIO |
 | Why keep raw data in Bronze? | So you can replay it through corrected rules, and audit what actually arrived |
 | Why does Gold live in Postgres? | dbt targets Postgres, and Superset queries it directly. It's simple, but wouldn't scale like a lake engine |
