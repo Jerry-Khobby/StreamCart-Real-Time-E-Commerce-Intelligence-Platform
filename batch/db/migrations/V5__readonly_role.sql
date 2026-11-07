@@ -1,5 +1,5 @@
 -- A read-only login for Grafana, Superset and the REST API, so a dashboard or API bug
--- can't change data. Flyway fills in the ${...} placeholders from the environment.
+-- can't change data. Flyway fills in reader_user and reader_password from the environment.
 
 DO $$
 BEGIN
