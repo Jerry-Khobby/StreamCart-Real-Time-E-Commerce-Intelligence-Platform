@@ -60,10 +60,10 @@ This is an honest checklist of StreamCart against common data engineering practi
 | --- | --- | --- |
 | Continuous integration | Lint, tests, a real dbt build on Postgres, and image builds | `.github/workflows/ci.yml` |
 | Schema migrations | Versioned Flyway migrations run on every start, for new and existing databases | `batch/db/migrations/` |
-| Infrastructure as code | The whole stack, its dashboards and its schemas are in the repository | `docker-compose.yml`, `dashboards/`, `batch/db/init/` |
+| Infrastructure as code | The whole stack, its dashboards and its schemas are in the repository | `docker-compose.yml`, `dashboards/`, `batch/db/migrations/` |
 | Pinned versions | Image tags, Python constraints and a dbt package lock | `Dockerfile`, `package-lock.yml` |
 | Secrets out of git | Settings come from an ignored `.env` file | `.env.example` |
-| Least privilege | Grafana, Superset and the API use a read-only login | `04_readonly_role.sh` |
+| Least privilege | Grafana, Superset and the API use a read-only login | `V5__readonly_role.sql` |
 | Documentation | Architecture, operations, a project guide, and generated dbt docs | `docs/`, CI artifact |
 
 ## Partly in place
