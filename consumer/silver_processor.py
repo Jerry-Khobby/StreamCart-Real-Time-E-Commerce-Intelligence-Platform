@@ -31,23 +31,19 @@ from consumer.lakehouse import (
     CATALOG, assert_unique, bucket, create_spark_session, jdbc_props, jdbc_url, merge_into,
 )
 from producer.logging_config import setup_logging
+from quality.rules import (
+    BOT_MAX_AVG_GAP_SECONDS, BOT_MIN_EVENTS, FUTURE_TOLERANCE_SECONDS, MAX_AMOUNT_USD, MAX_EVENT_AGE_SECONDS,
+    SESSION_GAP_SECONDS,
+)
+from quality.rules import BOT_USER_AGENT_PATTERN as BOT_UA_PATTERNS
+from quality.rules import INVENTORY_UPDATE_TYPES as VALID_UPDATE_TYPES
+from quality.rules import MARKET_CURRENCIES as VALID_CURRENCIES
+from quality.rules import ORDER_STATUSES as VALID_STATUSES
+from quality.rules import PAGE_TYPES as VALID_PAGE_TYPES
 from quality.validation import validate
 
 logger = setup_logging("silver_processing")
 
-VALID_CURRENCIES = ["USD", "EUR", "JPY", "NGN", "BRL"]
-VALID_STATUSES = ["completed", "pending", "failed", "refunded"]
-VALID_UPDATE_TYPES = ["order_fulfillment", "restock", "damage_writeoff", "audit_adjustment"]
-VALID_PAGE_TYPES = ["home", "category", "search", "product", "cart", "checkout",
-                    "order_confirmation", "account", "wishlist"]
-BOT_UA_PATTERNS = "(?i)bot|python-requests|curl|scrapy|spider|crawler"
-# Sessions faster than this are automated. Simulated humans take at least 5s per page.
-BOT_MIN_EVENTS = 5
-BOT_MAX_AVG_GAP_SECONDS = 3.0
-SESSION_GAP_SECONDS = 1800
-MAX_EVENT_AGE_SECONDS = 7 * 24 * 3600
-FUTURE_TOLERANCE_SECONDS = 300
-MAX_AMOUNT_USD = 50_000
 # Used when an event predates the first fetched rate, or the rates table is empty.
 FALLBACK_FX_RATES = {"USD": 1.00, "EUR": 1.09, "JPY": 0.0067, "NGN": 0.00064, "BRL": 0.20}
 

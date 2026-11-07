@@ -539,6 +539,7 @@ services:
     volumes:
       - ./consumer:/opt/airflow/consumer:ro
       - ./producer:/opt/airflow/producer:ro
+      - ./quality:/opt/airflow/quality:ro
       - ./logs:/opt/airflow/logs
     command: python -m consumer.realtime_sink
     restart: unless-stopped

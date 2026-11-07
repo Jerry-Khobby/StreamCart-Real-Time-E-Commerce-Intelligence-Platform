@@ -29,3 +29,11 @@ models:
     aggregates:
       +materialized: incremental
       +unique_key: surrogate_key
+
+# Fraud thresholds, kept equal to quality/rules.py and ksqlDB by tests/test_rules_consistency.py
+vars:
+  high_value_usd: 5000
+  new_session_seconds: 60
+  velocity_max_orders_per_hour: 10
+  card_test_max_amount_usd: 10
+  card_test_min_small_orders: 5
