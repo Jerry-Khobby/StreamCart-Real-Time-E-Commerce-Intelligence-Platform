@@ -67,3 +67,11 @@ def test_ksqldb_uses_the_shared_fraud_thresholds():
         (str(rules.HIGH_VALUE_USD), str(rules.NEW_SESSION_SECONDS))
     ] * 2
     assert re.findall(r"HAVING COUNT\(\*\) > (\d+)", sql) == [str(rules.VELOCITY_MAX_ORDERS_PER_HOUR)]
+
+
+def test_regions_seed_covers_every_market_and_currency():
+    import csv
+    with open(ROOT / "batch" / "dbt" / "seeds" / "regions.csv") as f:
+        seed = list(csv.DictReader(f))
+    assert sorted(r["local_currency"] for r in seed) == sorted(rules.MARKET_CURRENCIES)
+    assert len({r["region_code"] for r in seed}) == len(rules.MARKET_CURRENCIES)

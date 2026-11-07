@@ -115,6 +115,7 @@ jobs:
       - name: Build Gold on an empty Silver
         working-directory: batch/dbt
         run: |
+          dbt seed
           for layer in staging dimensions facts aggregates; do
             dbt build --select "$layer" --indirect-selection buildable
           done

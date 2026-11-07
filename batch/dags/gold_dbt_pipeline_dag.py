@@ -6,7 +6,7 @@ backfill. A fixed time could come before Silver had finished, and on a fresh ins
 Gold would build from empty tables.
 
 Execution order:
-  1. dbt deps       install packages
+  1. dbt deps       install packages, then load seeds (the regions reference table)
   2. source tests   validate the Silver tables before building on them
   3. freshness      warn if Silver has stopped updating
   4. staging        views over Silver
@@ -86,6 +86,8 @@ with DAG(
 
     dbt_deps = BashOperator(task_id="dbt_deps", bash_command=f"{DBT_CMD} deps {DBT_ARGS}")
 
+    dbt_seed = BashOperator(task_id="dbt_seed", bash_command=f"{DBT_CMD} seed {DBT_ARGS}")
+
     dbt_source_test = BashOperator(
         task_id="dbt_source_test",
         bash_command=f"{DBT_CMD} test --select source:silver {DBT_ARGS}",
@@ -100,6 +102,7 @@ with DAG(
 
     (
         dbt_deps
+        >> dbt_seed
         >> dbt_source_test
         >> dbt_freshness
         >> build_layer("staging")

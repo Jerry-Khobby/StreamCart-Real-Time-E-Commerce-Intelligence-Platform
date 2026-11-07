@@ -1,7 +1,9 @@
 -- models/staging/stg_inventory.sql
 
 with source as (
-    select * from {{ source('silver', 'inventory') }}
+    select s.*, r.timezone
+    from {{ source('silver', 'inventory') }} s
+    left join {{ ref('regions') }} r on r.region_code = s.region
 ),
 
 renamed as (
@@ -15,10 +17,10 @@ renamed as (
         stock_after,
         reorder_point,
 
-        event_time::timestamptz                 as occurred_at,
-        date_trunc('day', event_time)::date     as event_date,
-        extract(year  from event_time)::int     as event_year,
-        extract(month from event_time)::int     as event_month,
+        {{ utc_instant('event_time') }}                              as occurred_at,
+        {{ market_time('event_time', 'timezone') }}::date            as event_date,
+        extract(year  from {{ market_time('event_time', 'timezone') }})::int as event_year,
+        extract(month from {{ market_time('event_time', 'timezone') }})::int as event_month,
 
         -- Classify direction of movement
         case

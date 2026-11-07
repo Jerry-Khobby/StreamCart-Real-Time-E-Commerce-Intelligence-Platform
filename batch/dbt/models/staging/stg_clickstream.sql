@@ -4,7 +4,9 @@
 -- we use that here instead of the raw session_id.
 
 with source as (
-    select * from {{ source('silver', 'clickstream') }}
+    select s.*, r.timezone
+    from {{ source('silver', 'clickstream') }} s
+    left join {{ ref('regions') }} r on r.region_code = s.region
 ),
 
 renamed as (
@@ -19,11 +21,11 @@ renamed as (
         referrer,
         user_agent,
 
-        event_time::timestamptz                  as occurred_at,
-        date_trunc('day', event_time)::date      as event_date,
-        extract(year  from event_time)::int      as event_year,
-        extract(month from event_time)::int      as event_month,
-        extract(hour  from event_time)::int      as hour_of_day,
+        {{ utc_instant('event_time') }}                              as occurred_at,
+        {{ market_time('event_time', 'timezone') }}::date            as event_date,
+        extract(year  from {{ market_time('event_time', 'timezone') }})::int as event_year,
+        extract(month from {{ market_time('event_time', 'timezone') }})::int as event_month,
+        extract(hour  from {{ market_time('event_time', 'timezone') }})::int as hour_of_day,
 
         -- Derived: is this a conversion event?
         case

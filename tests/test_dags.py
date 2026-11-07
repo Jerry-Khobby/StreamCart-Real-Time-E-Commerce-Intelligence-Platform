@@ -54,7 +54,7 @@ def test_gold_runs_when_silver_is_updated(dagbag):
 
 def test_gold_runs_layers_in_dependency_order(dagbag):
     dag = dagbag.dags["gold_dbt_pipeline"]
-    order = ["dbt_deps", "dbt_source_test", "dbt_source_freshness", "dbt_build_staging", "dbt_build_dimensions",
+    order = ["dbt_deps", "dbt_seed", "dbt_source_test", "dbt_source_freshness", "dbt_build_staging", "dbt_build_dimensions",
              "dbt_build_facts", "dbt_build_aggregates", "log_gold_counts"]
     for upstream, downstream in zip(order, order[1:]):
         assert downstream in dag.get_task(upstream).downstream_task_ids
