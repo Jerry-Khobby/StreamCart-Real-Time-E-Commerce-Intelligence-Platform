@@ -16,6 +16,7 @@ This is an honest checklist of StreamCart against common data engineering practi
 | Stream recovery | Checkpoints are in object storage, and the job restarts itself | `consumer/spark_streaming.py` |
 | At-least-once serving | Kafka offsets are committed only after the database commit | `consumer/realtime_sink.py` |
 | Retries and timeouts | Every DAG sets retries, and long tasks set an execution timeout | `batch/dags/` |
+| Data-aware scheduling | Gold runs when Silver is updated, not at a fixed time | Airflow Datasets |
 | Late-arriving dimensions | Orders wait until their customer exists, then load on the next run | `fct_orders.sql` |
 
 ### Data quality
@@ -29,6 +30,7 @@ This is an honest checklist of StreamCart against common data engineering practi
 | Tests before downstream use | `dbt build` stops the next layer when a test fails | `gold_dbt_pipeline` DAG |
 | Row count guard | The DAG fails if Gold is empty while Silver has orders | `gold_dbt_pipeline` DAG |
 | Uniqueness guard | The Silver job fails if a merge leaves duplicate keys | `consumer/lakehouse.py` |
+| Volume anomaly checks | A day with under half the usual rows raises one alert | `observability_monitor` DAG |
 | Reconciliation | A daily comparison of source orders with Silver | `observability_monitor` DAG |
 
 ### Observability
@@ -57,6 +59,7 @@ This is an honest checklist of StreamCart against common data engineering practi
 | Practice | How it's done here | Where |
 | --- | --- | --- |
 | Continuous integration | Lint, tests, a real dbt build on Postgres, and image builds | `.github/workflows/ci.yml` |
+| Schema migrations | Versioned Flyway migrations run on every start, for new and existing databases | `batch/db/migrations/` |
 | Infrastructure as code | The whole stack, its dashboards and its schemas are in the repository | `docker-compose.yml`, `dashboards/`, `batch/db/init/` |
 | Pinned versions | Image tags, Python constraints and a dbt package lock | `Dockerfile`, `package-lock.yml` |
 | Secrets out of git | Settings come from an ignored `.env` file | `.env.example` |

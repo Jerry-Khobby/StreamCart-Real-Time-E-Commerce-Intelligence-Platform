@@ -505,7 +505,7 @@ Read the files in this order, because it follows the data from source to dashboa
 | `batch/dbt/models/staging/` | Views that rename and cast Silver columns | `stg_transactions.sql` |
 | `batch/dbt/models/dimensions/`, `facts/`, `aggregates/` | The Gold tables | `fct_orders.sql`, `agg_fraud_summary.sql` |
 | `batch/dbt/models/schema.yml` | dbt tests for Gold | The `fct_orders` section |
-| `batch/db/init/*.sql` | Creates the Postgres schemas on first start | `01_oltp_schema.sql` |
+| `batch/db/migrations/` | Flyway migrations for the Postgres schema | `V1__oltp_schema.sql`, `V5__readonly_role.sql` |
 
 ### Infrastructure and dashboards
 
@@ -603,6 +603,9 @@ Try to answer each question aloud before reading the answer. If you can't, go ba
 | How do you know no orders went missing? | A daily reconciliation compares `oltp.orders` with Silver |
 | What is a late-arriving dimension? | A fact that arrives before its dimension row. Here, those orders wait for the next run |
 | Why do dashboards have their own database login? | Least privilege: a dashboard or API bug can't change data |
+| How does Gold know Silver has finished? | The Silver task updates an Airflow Dataset, and Gold is scheduled on that Dataset |
+| How is the database schema changed? | With a new Flyway migration, which runs once on every database, old or new |
+| How would you notice that data stopped arriving? | The volume check compares each day with the median of the week before, and freshness checks warn too |
 | Why validate twice? | The raw check measures input quality, and the clean check is the gate that blocks writes |
 | How is a bot detected? | A bot user agent, or 5+ events in a session averaging under 3 seconds apart |
 | Why not use a bot label from the simulator? | The filter would prove nothing, and real traffic has no such label |

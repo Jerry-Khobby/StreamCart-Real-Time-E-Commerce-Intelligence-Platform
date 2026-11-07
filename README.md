@@ -88,6 +88,7 @@ All data shown is simulated.
 - Rows that fail are kept in a dead-letter table, so they can be inspected or replayed.
 - dbt tests cover keys, accepted values, ranges and foreign key relationships. A failed test stops the next layer from building.
 - A daily reconciliation compares source orders with Silver.
+- A volume check flags any day when a Silver table gets under half its usual rows.
 - The Grafana observability dashboard tracks DAG success rates, task failures, row counts, data freshness, quality results and schema changes.
 
 [docs/best-practices.md](docs/best-practices.md) lists which data engineering practices are in place, which are partial, and which are deliberately left out.
@@ -173,6 +174,8 @@ Everything below was run against the live stack. The final code passed a clean i
 | Read-only login | Grafana, Superset and the API can read, and writes are denied |
 | Reconciliation | No orders missing from Silver across 7 complete seeded days |
 | Failure feed | A real failed task was recorded for Grafana |
+| Gold triggered by Silver | Gold started on its own when a Silver run finished |
+| Schema migrations | Flyway brought an existing database up to date, and a second run found nothing to do |
 | Account takeover detection | 7 of 7 orders caught |
 | Geo anomaly detection | 6 of 6 orders caught |
 | Card testing detection | 10 of 10 users caught |
@@ -194,7 +197,8 @@ Everything below was run against the live stack. The final code passed a clean i
 ```text
 api/                 FastAPI service for inventory and fraud features
 batch/dags/          Airflow DAGs
-batch/db/init/       Postgres schemas, applied on first start
+batch/db/init/       Creates the Superset database on first start
+batch/db/migrations/ Flyway migrations for the Postgres schema
 batch/dbt/           dbt project for the Gold layer
 consumer/            Spark jobs and the real-time serving sink
 dashboards/          Grafana and Superset dashboards as code

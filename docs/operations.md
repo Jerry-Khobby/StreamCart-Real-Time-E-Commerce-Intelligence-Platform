@@ -74,6 +74,10 @@ Query a Bronze table as it was at an earlier time (Iceberg time travel), from a 
 SELECT count(*) FROM lake.bronze.transactions TIMESTAMP AS OF '2026-11-05 10:00:00';
 ```
 
+## Change the database schema
+
+Add a new versioned file to `batch/db/migrations`, then run `docker compose up db-migrate`. Never edit a migration that has already run. The folder's README has the details.
+
 ## Change a Kafka contract
 
 1. Edit the schema in `schemas/avro`. Give any new field a default, or the registry will reject the change as incompatible.
@@ -90,4 +94,4 @@ SELECT count(*) FROM lake.bronze.transactions TIMESTAMP AS OF '2026-11-05 10:00:
 | A DAG fails right after a fresh start | A service it calls isn't up yet | It retries, and later runs pass |
 | Gold tests pass but dashboards are empty | Silver hadn't run yet | Check `gold.fct_orders`, then rerun `gold_dbt_pipeline` |
 | Empty Superset charts | Gold hasn't been built yet | Run `silver_pipeline`, then `gold_dbt_pipeline` |
-| Schema changes in `batch/db/init` have no effect | Those scripts only run when the Postgres volume is first created | Apply the change by hand, or recreate the volume, which deletes its data |
+| A service won't start and `db-migrate` exited with an error | A migration failed | Check `docker compose logs db-migrate`, fix the newest migration, and run `docker compose up db-migrate` |
