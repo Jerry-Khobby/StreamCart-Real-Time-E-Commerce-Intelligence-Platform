@@ -19,6 +19,7 @@ EXPECTED = {
     "historical_backfill": "0 2 * * 0",
     "bronze_maintenance": "0 4 * * *",
     "observability_monitor": "*/15 * * * *",
+    "housekeeping": "30 4 * * *",
 }
 
 
