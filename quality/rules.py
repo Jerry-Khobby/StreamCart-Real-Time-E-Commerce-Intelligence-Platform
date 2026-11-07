@@ -25,6 +25,9 @@ BOT_MAX_AVG_GAP_SECONDS = 3.0
 # Session stitching
 SESSION_GAP_SECONDS = 1800
 
+# Weather: an hour counts as wet from this much rain (shared by the simulator and Gold)
+WET_HOUR_MIN_PRECIPITATION_MM = 0.5
+
 # Fraud signals, shared by ksqlDB (real time) and dbt (agg_fraud_summary)
 HIGH_VALUE_USD = 5000
 NEW_SESSION_SECONDS = 60

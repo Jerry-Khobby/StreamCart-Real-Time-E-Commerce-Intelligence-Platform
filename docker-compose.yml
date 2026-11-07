@@ -106,6 +106,7 @@ x-producer-common: &producer-common
     POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-streamcart_app}
   volumes:
     - ./producer:/opt/airflow/producer:ro
+    - ./quality:/opt/airflow/quality:ro
     - ./schemas:/opt/airflow/schemas:ro
     - ./logs:/opt/airflow/logs
   networks:

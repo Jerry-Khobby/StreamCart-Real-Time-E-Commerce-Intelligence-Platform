@@ -32,10 +32,11 @@ from typing import Optional
 
 from producer.config import (
     CURRENCIES, DAY_OF_WEEK_WEIGHTS, FRAUD_USER_POOL, FX_TO_USD, PAGE_FUNNEL_WEIGHTS, PRICE_RANGES,
-    PRODUCT_CATEGORIES, PRODUCT_IDS, REGION_PARTITIONS, REGIONS, SEASONAL_WEIGHTS, USER_HOME_REGION,
+    PRODUCT_CATEGORIES, PRODUCT_IDS, REGION_PARTITIONS, REGION_WEIGHTS, REGIONS, SEASONAL_WEIGHTS, USER_HOME_REGION,
     USER_IDS, WAREHOUSES, WAREHOUSES_BY_REGION, _BOT_UAS, _HUMAN_UAS, _REFERRERS, _SEARCH_TERMS,
 )
 from producer.logging_config import setup_logging
+from quality.rules import WET_HOUR_MIN_PRECIPITATION_MM
 
 logger = setup_logging("data_generator")
 
@@ -48,6 +49,14 @@ SCHEMA_DIR = Path(os.getenv("SCHEMA_DIR", Path(__file__).resolve().parent.parent
 DIRTY_RATE = float(os.getenv("DIRTY_RATE", "0.01"))
 # Share of clickstream sessions that are bots.
 BOT_RATE = 0.05
+
+# Peak orders per second. The demand curves average about 0.4 of the peak on a Sunday,
+# so this clears 50,000 orders on every day of the week (about 52,600 on a Sunday).
+DEFAULT_TX_RATE = 1.4
+# How far behind schedule the order stream may fall before it stops trying to catch up.
+MAX_BACKLOG_SECONDS = 30
+# Rain keeps people indoors: a wet hour in a market brings it this much more online demand.
+RAIN_DEMAND_LIFT = 1.25
 
 # Share of orders placed with a discount code (added in transactions schema version 2).
 PROMO_RATE = 0.1
@@ -227,7 +236,27 @@ def generate_fraud_scenario(
     return [generate_transaction(ts, is_backfill, user_id, ip_region=origin, fraud_type=scenario)]
 
 
-def generate_customer_order(ts: Optional[datetime] = None, is_backfill: bool = False) -> dict:
+USERS_BY_REGION = {region: [u for u in USER_IDS if USER_HOME_REGION[u] == region] for region in REGIONS}
+
+
+def pick_customer(region_lift: Optional[dict] = None) -> str:
+    """A random customer. A market with a demand lift (rain) is proportionally more likely."""
+    if not region_lift:
+        return random.choice(USER_IDS)
+    weights = [REGION_WEIGHTS[r] * region_lift.get(r, 1.0) for r in REGIONS]
+    return random.choice(USERS_BY_REGION[random.choices(REGIONS, weights=weights, k=1)[0]])
+
+
+def overall_lift(region_lift: Optional[dict]) -> float:
+    """How much the lifts raise total demand, so rain adds orders rather than moving them."""
+    if not region_lift:
+        return 1.0
+    return sum(REGION_WEIGHTS[r] * region_lift.get(r, 1.0) for r in REGIONS) / sum(REGION_WEIGHTS.values())
+
+
+def generate_customer_order(
+    ts: Optional[datetime] = None, is_backfill: bool = False, region_lift: Optional[dict] = None,
+) -> dict:
     """An ordinary order. A small share look suspicious but are innocent: false alarms in waiting."""
     roll = random.random()
     if roll < TRAVELLER_RATE:
@@ -238,7 +267,7 @@ def generate_customer_order(ts: Optional[datetime] = None, is_backfill: bool = F
         return generate_transaction(
             ts, is_backfill, amount_usd=random.uniform(5001, 9000), session_age_seconds=random.uniform(10, 55)
         )
-    return generate_transaction(ts, is_backfill)
+    return generate_transaction(ts, is_backfill, pick_customer(region_lift))
 
 
 def corrupt_transaction(event: dict) -> dict:
@@ -441,6 +470,64 @@ class StdoutPublisher:
         pass
 
 
+def connect_postgres():
+    import psycopg2
+    return psycopg2.connect(
+        host=os.getenv("POSTGRES_HOST", "postgres"),
+        port=os.getenv("POSTGRES_PORT", "5432"),
+        dbname=os.environ["POSTGRES_DB"],
+        user=os.environ["POSTGRES_USER"],
+        password=os.environ["POSTGRES_PASSWORD"],
+    )
+
+
+def rain_lift(precipitation_by_region: dict) -> dict:
+    """Demand multiplier per market from its latest rainfall."""
+    return {
+        region: RAIN_DEMAND_LIFT if (mm or 0) >= WET_HOUR_MIN_PRECIPITATION_MM else 1.0
+        for region, mm in precipitation_by_region.items()
+    }
+
+
+class WeatherBook:
+    """
+    The latest real weather per market, from the hourly Open-Meteo pull in silver.weather_hourly.
+    With no recent reading (the weather DAG hasn't run, or Postgres is unreachable) demand is unchanged.
+    """
+
+    REFRESH_SECONDS = 600
+
+    def __init__(self):
+        self._lift: dict = {}
+        self._loaded_at = float("-inf")
+
+    def lift(self) -> dict:
+        if time.monotonic() - self._loaded_at >= self.REFRESH_SECONDS:
+            self._loaded_at = time.monotonic()
+            self._lift = rain_lift(self._latest_precipitation())
+            wet = sorted(r for r, v in self._lift.items() if v > 1)
+            logger.info(f"[weather] Wet markets: {', '.join(wet) or 'none'}")
+        return self._lift
+
+    @staticmethod
+    def _latest_precipitation() -> dict:
+        try:
+            conn = connect_postgres()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT DISTINCT ON (region) region, precipitation_mm
+                        FROM silver.weather_hourly
+                        WHERE observed_at > (now() AT TIME ZONE 'UTC') - interval '3 hours'
+                        ORDER BY region, observed_at DESC""")
+                    return dict(cur.fetchall())
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning(f"[weather] No weather available, demand unchanged: {exc}")
+            return {}
+
+
 class OltpWriter:
     """
     Writes orders and payments to the transactional database, the way a storefront would.
@@ -449,17 +536,10 @@ class OltpWriter:
     """
 
     def __init__(self, batch_size: int = 50):
-        import psycopg2
         from psycopg2.extras import execute_values
 
         self._execute_values = execute_values
-        self._conn = psycopg2.connect(
-            host=os.getenv("POSTGRES_HOST", "postgres"),
-            port=os.getenv("POSTGRES_PORT", "5432"),
-            dbname=os.environ["POSTGRES_DB"],
-            user=os.environ["POSTGRES_USER"],
-            password=os.environ["POSTGRES_PASSWORD"],
-        )
+        self._conn = connect_postgres()
         self._batch_size = batch_size
         self._orders, self._payments = [], []
         self._lock = threading.Lock()
@@ -527,12 +607,25 @@ def emit_transaction(publisher, oltp, stock, tx: dict, ts: datetime, is_backfill
 # ---------------------------------------------------------------------------
 # Stream modes
 # ---------------------------------------------------------------------------
-def stream_transactions(publisher, oltp, stock, tx_per_second: float):
+def next_deadline(deadline: float, interval: float, now: float) -> float:
+    """
+    When the next order is due. Pacing against a schedule, not sleeping a full interval
+    after each send, stops slow sends from lowering the rate. A stream that falls far
+    behind (the machine was busy) catches up at most MAX_BACKLOG_SECONDS of orders.
+    """
+    return max(deadline + interval, now - MAX_BACKLOG_SECONDS)
+
+
+def stream_transactions(publisher, oltp, stock, tx_per_second: float, weather: Optional[WeatherBook] = None):
     logger.info(f"[transactions] Streaming at up to {tx_per_second} tx/s")
+    deadline = time.monotonic()
     while not shutdown_flag.is_set():
         ts = now_utc()
-        emit_transaction(publisher, oltp, stock, generate_customer_order(ts), ts)
-        shutdown_flag.wait(1.0 / (tx_per_second * demand_weight(ts)))
+        lift = weather.lift() if weather else {}
+        emit_transaction(publisher, oltp, stock, generate_customer_order(ts, region_lift=lift), ts)
+        interval = 1.0 / (tx_per_second * demand_weight(ts) * overall_lift(lift))
+        deadline = next_deadline(deadline, interval, time.monotonic())
+        shutdown_flag.wait(max(0.0, deadline - time.monotonic()))
 
 
 def stream_fraud(publisher, oltp, stock, per_hour: float = 20.0):
@@ -604,8 +697,7 @@ def main():
     parser.add_argument("--mode", choices=["all", "tx", "click", "inventory", "backfill", "sample"], default="sample")
     parser.add_argument("--days", type=int, default=14, help="Days of history for backfill mode")
     parser.add_argument("--tx-per-day", type=int, default=2000, help="Orders per day for backfill mode")
-    # At the default of 1.0 the demand curves average about 0.6 tx/s: over 50,000 orders a day.
-    parser.add_argument("--tx-rate", type=float, default=1.0, help="Peak transactions per second (stream modes)")
+    parser.add_argument("--tx-rate", type=float, default=DEFAULT_TX_RATE, help="Peak transactions per second (stream modes)")
     args = parser.parse_args()
 
     signal.signal(signal.SIGINT, handle_shutdown)
@@ -628,7 +720,7 @@ def main():
 
     jobs = []
     if args.mode in ("all", "tx"):
-        jobs.append((stream_transactions, (publisher, oltp, stock, args.tx_rate)))
+        jobs.append((stream_transactions, (publisher, oltp, stock, args.tx_rate, WeatherBook() if oltp else None)))
         jobs.append((stream_fraud, (publisher, oltp, stock)))
     if args.mode in ("all", "click"):
         jobs.append((stream_clickstream, (publisher,)))
