@@ -211,6 +211,18 @@ models:
           - dbt_utils.expression_is_true:
               expression: "between 0 and 100"
 
+  - name: agg_weather_demand
+    description: "Orders per market and hour beside that hour's weather, with demand relative to the usual for that time of day."
+    columns:
+      - name: surrogate_key
+        tests: [unique, not_null]
+      - name: orders
+        tests: [not_null]
+      - name: demand_index
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+
   - name: agg_customer_retention
     description: "Weekly acquisition cohorts: share of each cohort ordering in later weeks."
     columns:

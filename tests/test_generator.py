@@ -136,3 +136,34 @@ def test_backfill_flag_is_carried():
     old = datetime.now(timezone.utc) - timedelta(days=30)
     assert generate_transaction(old, is_backfill=True)["is_backfill"] is True
     assert all(e["is_backfill"] for e in generate_session(old, is_backfill=True))
+
+
+def test_default_rate_clears_50000_orders_on_every_day_of_the_week():
+    from datetime import datetime, timedelta, timezone
+
+    import producer.data_generator as g
+    monday = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    for day in range(7):
+        start = monday + timedelta(days=day)
+        orders = sum(g.DEFAULT_TX_RATE * g.demand_weight(start + timedelta(minutes=m)) * 60 for m in range(1440))
+        assert orders > 50_000, start.strftime("%A")
+
+
+def test_pacing_catches_up_after_a_slow_send_but_caps_the_backlog():
+    from producer.data_generator import MAX_BACKLOG_SECONDS, next_deadline
+    assert next_deadline(100.0, 1.0, now=100.5) == 101.0      # on schedule: wait until due
+    assert next_deadline(100.0, 1.0, now=105.0) == 101.0      # behind: due already, send at once
+    assert next_deadline(0.0, 1.0, now=1000.0) == 1000.0 - MAX_BACKLOG_SECONDS
+
+
+def test_rain_makes_a_market_busier_without_taking_orders_from_others():
+    import producer.data_generator as g
+    lift = g.rain_lift({"US": 0.0, "EU": 3.2, "Asia": None})
+    assert lift == {"US": 1.0, "EU": g.RAIN_DEMAND_LIFT, "Asia": 1.0}
+    assert g.overall_lift(lift) > 1.0 and g.overall_lift({}) == 1.0
+
+    import random
+    random.seed(7)
+    dry = sum(g.USER_HOME_REGION[g.pick_customer({})] == "EU" for _ in range(20000))
+    wet = sum(g.USER_HOME_REGION[g.pick_customer({"EU": 3.0})] == "EU" for _ in range(20000))
+    assert wet > dry * 1.5

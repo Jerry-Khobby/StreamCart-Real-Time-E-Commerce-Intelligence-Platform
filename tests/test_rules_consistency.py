@@ -49,6 +49,7 @@ def test_dbt_uses_the_shared_fraud_thresholds():
         "velocity_max_orders_per_hour": rules.VELOCITY_MAX_ORDERS_PER_HOUR,
         "card_test_max_amount_usd": rules.CARD_TEST_MAX_AMOUNT_USD,
         "card_test_min_small_orders": rules.CARD_TEST_MIN_SMALL_ORDERS,
+        "wet_hour_min_precipitation_mm": rules.WET_HOUR_MIN_PRECIPITATION_MM,
     }
 
 

@@ -46,6 +46,15 @@ sources:
           - name: session_id
             tests: [not_null]
 
+      - name: weather_hourly
+        description: "Hourly temperature and rainfall per market, from Open-Meteo."
+        loaded_at_field: observed_at
+        columns:
+          - name: region
+            tests: [not_null]
+          - name: observed_at
+            tests: [not_null]
+
       - name: inventory
         description: "Validated inventory delta events from all warehouses."
         columns:

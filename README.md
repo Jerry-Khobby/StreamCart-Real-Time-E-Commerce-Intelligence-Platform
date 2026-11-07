@@ -48,9 +48,10 @@ All data shown is simulated.
 
 ### Data simulator
 
-[producer/data_generator.py](producer/data_generator.py) produces more than 50,000 orders a day across five markets (US, EU, Asia, Africa, LatAm), with:
+[producer/data_generator.py](producer/data_generator.py) produces more than 50,000 orders a day across five markets (US, EU, Asia, Africa, LatAm), on every day of the week, with:
 
 - Daily demand peaks, weekend dips and seasonal category weights
+- Demand that follows the real weather: a market where it's raining gets 25% more orders
 - Multi-currency pricing
 - Pre-placed fraud: card testing bursts, account takeovers and geo anomalies
 - Bot sessions, half of which spoof a browser user agent
@@ -158,28 +159,28 @@ To run the tests and other day-to-day tasks, see [docs/operations.md](docs/opera
 
 ## Verified results
 
-Everything below was run against the live stack. The final code passed a clean install with empty volumes, and the fraud scores come from an earlier clean install with a longer live run.
+Everything below was run against the live stack. The final code passed a clean install with empty volumes, run as a separate Compose project beside the working one.
 
 | Check | Result |
 | --- | --- |
 | Clean install with `docker compose up -d --build` | All 22 services start, exit code 0 |
-| Automated tests | 69 of 69 pass, and CI runs them on every push with lint, a dbt build on Postgres and image builds |
+| Automated tests | 92 of 92 pass, and CI runs them on every push with lint, a dbt build on Postgres and image builds |
 | dbt | 15 models build, and all 112 tests pass, layer by layer from empty tables |
 | Silver on seeded history | 53,820 clickstream events in, 49,504 kept: bots and bad rows removed |
 | Quality gate | A tightened rule blocked the write, and the retry recovered those rows with no loss or duplicates |
 | Idempotency | After two full replays, row count equals distinct IDs in both Iceberg and Postgres, and in the dead-letter table |
 | Reproducible replays | A row that arrived on time 30 days ago is still accepted, and one that arrived 30 days late stays rejected |
-| Silver to Gold | 13,793 non-failed orders in Silver, 13,793 in `fct_orders` |
+| Silver to Gold | 13,405 non-failed orders in Silver, 13,405 in `fct_orders`, on a fresh install |
 | Dead-letter table | Rejected rows are kept as JSON in `lake.silver.rejected_rows` |
 | Read-only login | Grafana, Superset and the API can read, and writes are denied |
+| Application login | On a fresh install, Airflow's tables, the Iceberg catalog and every pipeline table were created by the non-superuser login, and it was refused when it tried to create a role |
+| Schema evolution | A second transactions schema version was registered mid-stream. Bronze stopped once, restarted, added the `promo_code` column, and Kafka offsets stayed contiguous with no duplicates |
 | Reconciliation | No orders missing from Silver across 7 complete seeded days |
 | Failure feed | A real failed task was recorded for Grafana |
 | Gold triggered by Silver | Gold started on its own when a Silver run finished |
 | Schema migrations | Flyway brought an existing database up to date, and a second run found nothing to do |
-| Account takeover detection | 7 of 7 orders caught |
-| Geo anomaly detection | 6 of 6 orders caught |
-| Card testing detection | 10 of 10 users caught |
-| False alarms | No alerts on users without injected fraud |
+| Fraud rule scoring | Scored every 15 minutes against hidden labels. In the first hour of a fresh install, the geo rule raised a false alarm on a traveller and the velocity rule missed a slow card tester, as the hard cases are designed to cause |
+| Regional time zones | About 30% of Asia's orders moved to the correct local day |
 | Event to serving table latency | About 1 second |
 | Schema contract | Registry refused an incompatible schema |
 | 90-day retention | Old rows moved to the archive bucket and left Bronze |
@@ -188,8 +189,8 @@ Everything below was run against the live stack. The final code passed a clean i
 
 ### Limits of these results
 
-- **The data is simulated.** The fraud rules were written for the patterns the simulator injects, so those scores show the pipeline works, not how it would perform on real fraud.
-- **The sample is small.** The fraud scores come from about 2,100 live orders.
+- **The data is simulated.** Some injected fraud is built to evade the rules and some innocent orders look suspicious, but the simulator still decides what fraud looks like, so the scores don't predict performance on real fraud.
+- **The fraud sample is small.** About 30 labelled fraud orders had arrived when these checks ran. The monitor keeps scoring a rolling 24 hours, and the Real-Time Operations dashboard shows the latest figures.
 - **It's a single-machine setup.** One Kafka broker, one Spark worker and one Postgres instance, so nothing is highly available.
 
 ## Repository layout
