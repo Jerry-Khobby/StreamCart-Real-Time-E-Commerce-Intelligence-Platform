@@ -62,6 +62,28 @@ A stitched session ID is a hash of the user and the session's first event time. 
 
 History is seeded with `is_backfill = true`. Without the flag, the 7-day age rule would reject the whole seed, and the fraud rules would raise alerts about events from two weeks ago.
 
+### Each event is decoded with its own schema version
+
+Every Kafka message starts with the ID of the schema it was written with. Bronze reads that ID, decodes the message with that version, and resolves it to the latest registered version, so old and new events land in the same columns. A field a new version adds becomes a new Iceberg column, and a field it drops stays in the table as nulls. If a version is registered while the job is running, the job stops on the first message that uses it, and Docker restarts it with the new version loaded. The checkpoint replays that micro-batch, so nothing is lost or written twice.
+
+Silver lists its columns explicitly, so a new Bronze field reaches Silver and Gold only when someone adds it there.
+
+### Reports use each market's local time
+
+Silver keeps UTC. Gold converts each event to its market's time zone, from the `regions` seed, before taking the date and hour. Otherwise a Tokyo order placed at 1 a.m. on Tuesday would be counted on Monday, and about a third of Asia's orders would land on the wrong day.
+
+### Three database logins
+
+| Login | Used by | Can do |
+| --- | --- | --- |
+| Superuser (`POSTGRES_USER`) | Postgres itself and Flyway migrations | Everything |
+| Application (`POSTGRES_APP_USER`) | Airflow, Spark, dbt, the simulator and the serving sink | Read and write the pipeline's schemas. It can't create roles or databases |
+| Read-only (`POSTGRES_READER_USER`) | Grafana, Superset's Gold connection and the REST API | Read only |
+
+### Fraud rules are scored against hidden labels
+
+The simulator labels the fraud it injects, and the labels travel with each order but are never used to raise an alert. About 30% of injected fraud is built to slip under the rules, and a small share of innocent orders look suspicious: customers ordering while abroad, and returning customers making a large purchase straight after logging in. Every 15 minutes the monitor compares the alerts with the labels and records each rule's precision and recall over the last 24 hours.
+
 ### Fraud velocity is a separate query
 
 The requirements describe all fraud signals in one `CASE` expression. ksqlDB can't join a stream to a windowed table, so `VELOCITY_BREACH` comes from a rolling one-hour table whose breaches are inserted into the same `fraud_alerts` topic. Because the window is hopping, one breach can emit several times. The sink's primary key on transaction and signal removes the repeats.
@@ -95,8 +117,9 @@ One Postgres instance holds all of these, which keeps memory use practical on a 
 | `silver_pipeline` | Hourly | Bronze to Silver |
 | `fx_rates_refresh` | Hourly | Append FX rates |
 | `external_sources` | Hourly at :05 | Weather, and stock from the inventory API |
-| `observability_monitor` | Every 15 minutes | Row counts, freshness, schema changes |
+| `observability_monitor` | Every 15 minutes | Row counts, freshness, schema changes, volume, fraud rule scores |
 | `oltp_daily_batch` | Daily 00:30 | Extract orders, payments and users to Bronze |
 | `gold_dbt_pipeline` | When Silver is updated | Build and test Gold |
-| `bronze_maintenance` | Daily 04:00 | Archive after 90 days, compact, expire snapshots |
+| `bronze_maintenance` | Daily 04:00 | Archive after 90 days, compact, expire snapshots, prune the dead-letter table |
+| `housekeeping` | Daily 04:30 | Prune monitoring samples, audit tables and Airflow's own history |
 | `historical_backfill` | Sundays 02:00 (paused on install) | Replay 7 days through Silver, then rebuild Gold |

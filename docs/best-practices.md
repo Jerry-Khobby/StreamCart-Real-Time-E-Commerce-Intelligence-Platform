@@ -24,6 +24,8 @@ This is an honest checklist of StreamCart against common data engineering practi
 | Practice | How it's done here | Where |
 | --- | --- | --- |
 | Data contracts | Avro schemas with BACKWARD compatibility, and producers can't register new ones | `schemas/avro/` |
+| Schema evolution | Bronze decodes each event with the version it was written in, and adds new fields as columns | `consumer/spark_streaming.py` |
+| Rules in one place | Thresholds and value sets live in one module, and a test checks the SQL, YAML and JSON copies match | `quality/rules.py`, `tests/test_rules_consistency.py` |
 | Validation gate | Great Expectations blocks a bad Silver write | `quality/` |
 | Dead-letter table | Rejected rows are kept as JSON for inspection or replay | `lake.silver.rejected_rows` |
 | Tests on every model | Keys, accepted values, ranges and foreign keys | `batch/dbt/models/schema.yml` |
@@ -32,6 +34,7 @@ This is an honest checklist of StreamCart against common data engineering practi
 | Uniqueness guard | The Silver job fails if a merge leaves duplicate keys | `consumer/lakehouse.py` |
 | Volume anomaly checks | A day with under half the usual rows raises one alert | `observability_monitor` DAG |
 | Reconciliation | A daily comparison of source orders with Silver | `observability_monitor` DAG |
+| Honest rule evaluation | Fraud rules are scored for precision and recall against hidden labels, including fraud built to evade them and innocent orders that look suspicious | `observability.fraud_evaluation` |
 
 ### Observability
 
@@ -52,6 +55,8 @@ This is an honest checklist of StreamCart against common data engineering practi
 | Partitioning | Bronze by region and date, and Kafka by region | `spark_streaming.py`, `producer/config.py` |
 | Retention | Rows over 90 days old move to a cold-storage bucket | `consumer/bronze_maintenance.py` |
 | Table maintenance | Compaction and snapshot expiry for Bronze and Silver | `consumer/bronze_maintenance.py` |
+| Bounded growth | Monitoring samples, audit tables, the dead-letter table and Airflow's history are pruned on a schedule | `housekeeping`, `bronze_maintenance` |
+| Local time for regional reports | Gold dates and hours are in each market's own time zone, so a Tokyo order at 1 a.m. counts on the Tokyo day | `seeds/regions.csv`, `macros/market_time.sql` |
 | Dimensional model | A star schema with surrogate keys and tested relationships | `batch/dbt/models/` |
 
 ### Engineering
@@ -63,7 +68,7 @@ This is an honest checklist of StreamCart against common data engineering practi
 | Infrastructure as code | The whole stack, its dashboards and its schemas are in the repository | `docker-compose.yml`, `dashboards/`, `batch/db/migrations/` |
 | Pinned versions | Image tags, Python constraints and a dbt package lock | `Dockerfile`, `package-lock.yml` |
 | Secrets out of git | Settings come from an ignored `.env` file | `.env.example` |
-| Least privilege | Grafana, Superset and the API use a read-only login | `V5__readonly_role.sql` |
+| Least privilege in Postgres | Pipeline services use a login that can't create roles or databases, and dashboards and the API use a read-only one. The superuser is left to Postgres and the migrations | `V5__readonly_role.sql`, `V8__app_role.sql` |
 | Documentation | Architecture, operations, a project guide, and generated dbt docs | `docs/`, CI artifact |
 
 ## Partly in place
@@ -73,7 +78,7 @@ This is an honest checklist of StreamCart against common data engineering practi
 | Blocking bad data from users | A failed test stops later layers, but the failing table itself stays visible | Build into a staging schema, then swap it in only if tests pass |
 | Alerting | Failures are recorded and shown on a dashboard, but nobody is notified | Send them to Slack, email or a paging service |
 | Secrets management | `.env` is safe locally, but `.env.example` holds shared development passwords | A secrets manager, and unique passwords per environment |
-| Fraud rules in one place | The same signals are defined in ksqlDB and `agg_fraud_summary` | A shared definition, or a test comparing the two |
+| Least privilege beyond Postgres | MinIO is reached with its root account, Kafka has no authentication, and Superset's own metadata database uses the Postgres superuser | A MinIO user limited to the two buckets, SASL and ACLs on Kafka, and a Superset login |
 | Old secret in history | `airflow.cfg` was committed with a webserver `secret_key` before being removed. It isn't used now, but it stays in git history | Rewrite history if the key was ever reused |
 
 ## Deliberately not done
