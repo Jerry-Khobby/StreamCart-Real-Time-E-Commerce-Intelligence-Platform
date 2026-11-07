@@ -49,6 +49,10 @@ DIRTY_RATE = float(os.getenv("DIRTY_RATE", "0.01"))
 # Share of clickstream sessions that are bots.
 BOT_RATE = 0.05
 
+# Share of orders placed with a discount code (added in transactions schema version 2).
+PROMO_RATE = 0.1
+PROMO_CODES = ["WELCOME10", "SPRING15", "FREESHIP", "VIP20"]
+
 # Hard cases, so the fraud rules are tested honestly rather than against fraud built to trip them.
 # Share of fraud scenarios crafted to slip under the rules' thresholds.
 EVASIVE_FRAUD_RATE = 0.3
@@ -176,6 +180,8 @@ def generate_transaction(
         # Ground truth for scoring detection; dropped in Silver.
         "_is_fraud": fraud_type is not None,
         "_fraud_type": fraud_type,
+        # Schema version 2: a discount code on some orders
+        "promo_code": random.choice(PROMO_CODES) if random.random() < PROMO_RATE else None,
     }
 
 

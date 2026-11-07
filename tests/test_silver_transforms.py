@@ -3,7 +3,6 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from pyspark.sql import SparkSession
 
 from consumer.lakehouse import SPARK_SAFETY_CONF
 from consumer.silver_processor import (
@@ -12,19 +11,6 @@ from consumer.silver_processor import (
 )
 
 T0 = datetime(2026, 11, 1, 12, 0, 0)
-
-
-@pytest.fixture(scope="module")
-def spark():
-    session = (
-        SparkSession.builder.master("local[1]").appName("silver-tests")
-        .config("spark.sql.session.timeZone", "UTC")
-        .config("spark.sql.shuffle.partitions", "1")
-        .config("spark.ui.enabled", "false")
-        .getOrCreate()
-    )
-    yield session
-    session.stop()
 
 
 def clicks(spark, rows):

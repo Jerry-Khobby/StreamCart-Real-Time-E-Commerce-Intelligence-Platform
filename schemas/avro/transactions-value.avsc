@@ -21,6 +21,7 @@
     {"name": "timestamp", "type": ["null", "string"], "default": null, "doc": "ISO-8601 UTC event time."},
     {"name": "is_backfill", "type": "boolean", "default": false, "doc": "Historical seed data: exempt from the 7-day age check, ignored by real-time alerting."},
     {"name": "_is_fraud", "type": "boolean", "default": false, "doc": "Simulator ground truth, used only to score detection. Dropped in Silver."},
-    {"name": "_fraud_type", "type": ["null", "string"], "default": null}
+    {"name": "_fraud_type", "type": ["null", "string"], "default": null},
+    {"name": "promo_code", "type": ["null", "string"], "default": null, "doc": "Added in version 2. Optional with a default, so the change is BACKWARD compatible: consumers can still read version 1 events, which get null."}
   ]
 }
