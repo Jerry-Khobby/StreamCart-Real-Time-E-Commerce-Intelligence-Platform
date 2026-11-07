@@ -89,20 +89,24 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install dbt-core==1.7.13 dbt-postgres==1.7.13
-      # In the same alphabetical order Postgres uses on a fresh install.
-      - name: Run the database init scripts
-        env:
-          POSTGRES_READER_USER: streamcart_reader
-          POSTGRES_READER_PASSWORD: streamcart_reader
-          PGHOST: localhost
+      - name: Create the databases
+        run: psql -h localhost -U streamcart -d streamcart_db -v ON_ERROR_STOP=1 -f batch/db/init/00_databases.sql
+      # The same Flyway version and migrations as the db-migrate service.
+      - name: Apply migrations
         run: |
-          for f in $(ls batch/db/init/* | LC_ALL=C sort); do
-            echo "--- $f"
-            case "$f" in
-              *.sql) psql -U streamcart -d streamcart_db -v ON_ERROR_STOP=1 -q -f "$f" ;;
-              *.sh) bash "$f" ;;
-            esac
-          done
+          docker run --rm --network host -v "$PWD/batch/db/migrations:/flyway/sql:ro" \
+            -e FLYWAY_URL=jdbc:postgresql://localhost:5432/streamcart_db -e FLYWAY_USER=streamcart -e FLYWAY_PASSWORD=streamcart \
+            -e FLYWAY_PLACEHOLDERS_READER_USER=streamcart_reader -e FLYWAY_PLACEHOLDERS_READER_PASSWORD=streamcart_reader \
+            -e FLYWAY_BASELINE_ON_MIGRATE=true -e FLYWAY_BASELINE_VERSION=0 \
+            flyway/flyway:10.20.1-alpine migrate
+      # A second run must find nothing to do, as on every restart.
+      - name: Apply migrations again
+        run: |
+          docker run --rm --network host -v "$PWD/batch/db/migrations:/flyway/sql:ro" \
+            -e FLYWAY_URL=jdbc:postgresql://localhost:5432/streamcart_db -e FLYWAY_USER=streamcart -e FLYWAY_PASSWORD=streamcart \
+            -e FLYWAY_PLACEHOLDERS_READER_USER=streamcart_reader -e FLYWAY_PLACEHOLDERS_READER_PASSWORD=streamcart_reader \
+            -e FLYWAY_BASELINE_ON_MIGRATE=true -e FLYWAY_BASELINE_VERSION=0 \
+            flyway/flyway:10.20.1-alpine migrate
       - name: Install dbt packages
         working-directory: batch/dbt
         run: dbt deps

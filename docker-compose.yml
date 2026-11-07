@@ -125,8 +125,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_READER_USER: ${POSTGRES_READER_USER}
-      POSTGRES_READER_PASSWORD: ${POSTGRES_READER_PASSWORD}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./batch/db/init:/docker-entrypoint-initdb.d:ro
@@ -143,6 +141,32 @@ services:
     networks:
       - streamcart-net
     restart: unless-stopped
+
+  # ── Schema migrations (Flyway) ─────────────────────────────────────────────
+  # Applies batch/db/migrations in order and records each one, so new and existing
+  # databases both end up on the latest schema. Everything that writes to Postgres waits for it.
+  db-migrate:
+    image: flyway/flyway:10.20.1-alpine
+    container_name: streamcart-db-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      FLYWAY_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      FLYWAY_USER: ${POSTGRES_USER}
+      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD}
+      FLYWAY_PLACEHOLDERS_READER_USER: ${POSTGRES_READER_USER}
+      FLYWAY_PLACEHOLDERS_READER_PASSWORD: ${POSTGRES_READER_PASSWORD}
+      # Databases created before Flyway was added already have Airflow's tables.
+      FLYWAY_BASELINE_ON_MIGRATE: "true"
+      FLYWAY_BASELINE_VERSION: "0"
+      FLYWAY_CONNECT_RETRIES: "60"
+    volumes:
+      - ./batch/db/migrations:/flyway/sql:ro
+    command: migrate
+    networks:
+      - streamcart-net
+    restart: "no"
 
   # ── MinIO (S3-compatible object storage for the lakehouse) ───────────────
   # The official minio/minio images are no longer published on Docker Hub or Quay.
@@ -288,6 +312,8 @@ services:
     container_name: streamcart-airflow-init
     profiles: ["batch", "full"]
     depends_on:
+      db-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     volumes:
@@ -417,6 +443,8 @@ services:
     <<: *producer-common
     container_name: streamcart-data-seed
     depends_on:
+      db-migrate:
+        condition: service_completed_successfully
       schema-init:
         condition: service_completed_successfully
       postgres:
@@ -429,6 +457,8 @@ services:
     <<: *producer-common
     container_name: streamcart-data-generator
     depends_on:
+      db-migrate:
+        condition: service_completed_successfully
       schema-init:
         condition: service_completed_successfully
       postgres:
@@ -500,6 +530,8 @@ services:
     container_name: streamcart-realtime-sink
     profiles: ["realtime", "full"]
     depends_on:
+      db-migrate:
+        condition: service_completed_successfully
       ksqldb-init:
         condition: service_completed_successfully
       postgres:
@@ -522,6 +554,8 @@ services:
     container_name: streamcart-api
     profiles: ["realtime", "full"]
     depends_on:
+      db-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     env_file: .env
@@ -543,6 +577,8 @@ services:
     container_name: streamcart-grafana
     profiles: ["realtime", "full"]
     depends_on:
+      db-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     environment:
@@ -570,6 +606,8 @@ services:
     container_name: streamcart-superset-init
     profiles: ["bi", "full"]
     depends_on:
+      db-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     env_file: .env
