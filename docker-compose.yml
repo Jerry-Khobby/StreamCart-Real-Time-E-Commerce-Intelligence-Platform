@@ -51,6 +51,11 @@ x-airflow-env: &airflow-env
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_APP_USER:-streamcart_app}:${POSTGRES_APP_PASSWORD:-streamcart_app}@postgres:5432/${POSTGRES_DB}
     # Airflow connections used by the DAGs
     # The Spark hook builds --master from host:port, so the host carries the scheme.
+    # The lakehouse's own MinIO login (created by minio-init), not the root account.
+    MINIO_APP_USER: ${MINIO_APP_USER:-streamcart-lakehouse}
+    MINIO_APP_PASSWORD: ${MINIO_APP_PASSWORD:-streamcart-lakehouse-secret}
+    MINIO_ROOT_USER: ""
+    MINIO_ROOT_PASSWORD: ""
     AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type": "spark", "host": "spark://spark-master", "port": 7077}'
     AIRFLOW_CONN_STREAMCART_POSTGRES: postgres://${POSTGRES_APP_USER:-streamcart_app}:${POSTGRES_APP_PASSWORD:-streamcart_app}@postgres:5432/${POSTGRES_DB}
     # PostgreSQL
@@ -207,6 +212,28 @@ services:
       - streamcart-net
     restart: unless-stopped
 
+  # ── MinIO login for the lakehouse ──────────────────────────────────────────
+  # Creates the user Spark and Airflow use, limited to the two lakehouse buckets.
+  minio-init:
+    image: bitnamilegacy/minio:2025.7.23
+    container_name: streamcart-minio-init
+    profiles: ["batch", "full"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      MINIO_APP_USER: ${MINIO_APP_USER:-streamcart-lakehouse}
+      MINIO_APP_PASSWORD: ${MINIO_APP_PASSWORD:-streamcart-lakehouse-secret}
+    volumes:
+      - ./storage/minio-init.sh:/minio-init.sh:ro
+    entrypoint: ["/bin/sh", "/minio-init.sh"]
+    networks:
+      - streamcart-net
+    restart: "no"
+
   # ── Zookeeper (Kafka coordination) ───────────────────────────────────────
   zookeeper:
     image: confluentinc/cp-zookeeper:7.7.7
@@ -325,6 +352,8 @@ services:
     depends_on:
       db-migrate:
         condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     volumes:
@@ -386,6 +415,8 @@ services:
     profiles: ["batch", "full"]
     environment:
       SPARK_DAEMON_MEMORY: 256m
+      MINIO_ROOT_USER: ""
+      MINIO_ROOT_PASSWORD: ""
     command: ["spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077 --webui-port 8080"]
     ports:
       - "${SPARK_UI_HOST_PORT:-8081}:8080"
@@ -408,6 +439,8 @@ services:
     environment:
       SPARK_WORKER_DIR: /tmp/spark-work
       SPARK_DAEMON_MEMORY: 256m
+      MINIO_ROOT_USER: ""
+      MINIO_ROOT_PASSWORD: ""
     command: ["spark-class org.apache.spark.deploy.worker.Worker --cores 3 --memory 2g --webui-port 8081 spark://spark-master:7077"]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8081 || exit 1"]
@@ -426,8 +459,8 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
-      minio:
-        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     # Without spark.cores.max a streaming app takes every core and no batch job
     # can ever start ("Initial job has not accepted any resources").
     command:
@@ -442,10 +475,16 @@ services:
         --conf spark.sql.shuffle.partitions=2
         --conf spark.ui.enabled=false
         /opt/airflow/consumer/spark_streaming.py
-    # The Iceberg catalog in Postgres is reached with the application login.
+    # The Iceberg catalog in Postgres and the lakehouse in MinIO are reached with the
+    # application logins, never the superuser or root account.
     environment:
       POSTGRES_USER: ${POSTGRES_APP_USER:-streamcart_app}
       POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-streamcart_app}
+      MINIO_APP_USER: ${MINIO_APP_USER:-streamcart-lakehouse}
+      MINIO_APP_PASSWORD: ${MINIO_APP_PASSWORD:-streamcart-lakehouse-secret}
+      # .env holds the MinIO root login; blank it so this container never has it.
+      MINIO_ROOT_USER: ""
+      MINIO_ROOT_PASSWORD: ""
     # Always restart: the checkpoint resumes exactly where the stream stopped.
     restart: unless-stopped
 

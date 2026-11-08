@@ -41,8 +41,9 @@ def create_spark_session(app_name: str) -> SparkSession:
         .config("spark.sql.session.timeZone", "UTC")
         # MinIO through S3A
         .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
-        .config("spark.hadoop.fs.s3a.access.key", os.getenv("MINIO_ROOT_USER"))
-        .config("spark.hadoop.fs.s3a.secret.key", os.getenv("MINIO_ROOT_PASSWORD"))
+        # The lakehouse's own login (storage/minio-init.sh), limited to its two buckets
+        .config("spark.hadoop.fs.s3a.access.key", os.environ["MINIO_APP_USER"])
+        .config("spark.hadoop.fs.s3a.secret.key", os.environ["MINIO_APP_PASSWORD"])
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.aws.credentials.provider",
