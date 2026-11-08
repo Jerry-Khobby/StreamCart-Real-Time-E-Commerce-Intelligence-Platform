@@ -1,5 +1,8 @@
 """Settings shared by the DAGs."""
 
+import json
+import os
+import urllib.request
 from datetime import datetime, timezone
 
 from airflow.datasets import Dataset
@@ -25,11 +28,37 @@ SPARK_POOL = "spark_batch"
 SILVER_DATASET = Dataset("postgres://postgres:5432/streamcart_db/silver")
 
 
+def send_alert(text: str, url: str = None) -> bool:
+    """
+    Post an alert to a chat webhook, as {"text": ...}, which Slack and Mattermost incoming
+    webhooks accept. ALERT_WEBHOOK_URL in .env turns it on; left empty, nothing is sent.
+    Returns whether it was delivered, and never raises.
+    """
+    url = url if url is not None else os.getenv("ALERT_WEBHOOK_URL", "")
+    if not url:
+        return False
+    request = urllib.request.Request(
+        url, data=json.dumps({"text": text}).encode(), headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return 200 <= response.status < 300
+    except Exception as exc:
+        print(f"Could not send the alert: {exc}")
+        return False
+
+
+def failure_message(context) -> str:
+    instance = context["task_instance"]
+    error = str(context.get("exception"))[:300]
+    return (f":rotating_light: StreamCart: {instance.dag_id}.{instance.task_id} failed after its retries\n"
+            f"Run: {instance.run_id}\nError: {error}\nLog: {instance.log_url}")
+
+
 def record_failure(context):
     """
-    Record a task that has used up its retries, for the Grafana failure panel. A real
-    deployment would also page someone here. Never raises: a broken alert mustn't hide
-    the failure that caused it.
+    Record a task that has used up its retries, for the Grafana failure panel, and alert
+    the webhook if one is set. Never raises: a broken alert mustn't hide the failure that
+    caused it.
     """
     from airflow.providers.postgres.hooks.postgres import PostgresHook
 
@@ -43,6 +72,7 @@ def record_failure(context):
         )
     except Exception as exc:
         print(f"Could not record the failure: {exc}")
+    send_alert(failure_message(context))
 
 
 # A day with under half its usual volume is flagged. Needs a few days of history first.
