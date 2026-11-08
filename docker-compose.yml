@@ -173,13 +173,21 @@ services:
       FLYWAY_PLACEHOLDERS_READER_PASSWORD: ${POSTGRES_READER_PASSWORD}
       FLYWAY_PLACEHOLDERS_APP_USER: ${POSTGRES_APP_USER:-streamcart_app}
       FLYWAY_PLACEHOLDERS_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-streamcart_app}
+      FLYWAY_PLACEHOLDERS_SUPERSET_USER: ${SUPERSET_DB_USER:-streamcart_superset}
+      FLYWAY_PLACEHOLDERS_SUPERSET_PASSWORD: ${SUPERSET_DB_PASSWORD:-streamcart_superset}
       # Databases created before Flyway was added already have Airflow's tables.
       FLYWAY_BASELINE_ON_MIGRATE: "true"
       FLYWAY_BASELINE_VERSION: "0"
       FLYWAY_CONNECT_RETRIES: "60"
     volumes:
       - ./batch/db/migrations:/flyway/sql:ro
-    command: migrate
+      - ./batch/db/superset-migrations:/flyway/superset:ro
+    # The warehouse first (it creates Superset's login), then Superset's own database.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        flyway migrate &&
+        flyway -url=jdbc:postgresql://postgres:5432/superset -locations=filesystem:/flyway/superset migrate
     networks:
       - streamcart-net
     restart: "no"
@@ -666,6 +674,12 @@ services:
       postgres:
         condition: service_healthy
     env_file: .env
+    environment:
+      SUPERSET_DB_USER: ${SUPERSET_DB_USER:-streamcart_superset}
+      SUPERSET_DB_PASSWORD: ${SUPERSET_DB_PASSWORD:-streamcart_superset}
+      # .env holds the Postgres superuser; blank it so Superset never has it.
+      POSTGRES_USER: ""
+      POSTGRES_PASSWORD: ""
     command: ["/app/streamcart/init.sh"]
     networks:
       - streamcart-net
@@ -680,6 +694,11 @@ services:
         condition: service_completed_successfully
     env_file: .env
     environment:
+      SUPERSET_DB_USER: ${SUPERSET_DB_USER:-streamcart_superset}
+      SUPERSET_DB_PASSWORD: ${SUPERSET_DB_PASSWORD:-streamcart_superset}
+      # .env holds the Postgres superuser; blank it so Superset never has it.
+      POSTGRES_USER: ""
+      POSTGRES_PASSWORD: ""
       SERVER_WORKER_AMOUNT: "1"
       SERVER_THREADS_AMOUNT: "4"
     ports:
