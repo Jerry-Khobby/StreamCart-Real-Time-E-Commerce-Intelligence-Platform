@@ -86,6 +86,14 @@ Add a new versioned file to `batch/db/migrations`, then run `docker compose up d
 4. The next `observability_monitor` run records the new version in the schema change log.
 5. To carry the field further, add it to `SILVER_COLUMNS` in `consumer/silver_processor.py` and to the Silver table with a migration.
 
+## Turn on failure alerts
+
+Set `ALERT_WEBHOOK_URL` in `.env` to a Slack or Mattermost incoming webhook, then recreate Airflow with `docker compose up -d`. Failed tasks and volume drops are posted with the task, the error and a link to its log.
+
+## When a Gold build fails its tests
+
+Nothing reaches `gold`: Superset and Grafana keep the last good tables. The failed build is left in `gold_next`, so you can query it to see what went wrong. Fix the model, then rerun `gold_dbt_pipeline`. Its first step clears `gold_next`.
+
 ## Check the fraud rules' accuracy
 
 The monitor scores each rule every 15 minutes against the simulator's hidden labels. The Real-Time Operations dashboard shows the latest scores, or:
@@ -122,6 +130,8 @@ docker compose exec airflow-scheduler bash -c "cd /opt/airflow/dbt && dbt build 
 
 | Login | `.env` setting | Used by |
 | --- | --- | --- |
+| MinIO lakehouse login | `MINIO_APP_USER` | Spark and Airflow. Limited to the two lakehouse buckets |
+| MinIO root | `MINIO_ROOT_USER` | MinIO itself, `minio-init` and the console |
 | Superuser | `POSTGRES_USER` | Postgres and the migrations. Use it for admin work by hand |
 | Application | `POSTGRES_APP_USER` | Airflow, Spark, dbt, the simulator and the serving sink |
 | Read-only | `POSTGRES_READER_USER` | Grafana, Superset's Gold connection and the REST API |

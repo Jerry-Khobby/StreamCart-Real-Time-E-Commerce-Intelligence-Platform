@@ -317,7 +317,7 @@ One Postgres instance holds all of these, which keeps memory use practical on on
 | `fx_rates_refresh` | Hourly | Appends exchange rates from open.er-api.com |
 | `external_sources` | Hourly at :05 | Fetches weather from Open-Meteo, and stock from the inventory API |
 | `oltp_daily_batch` | Daily 00:30 | Extracts orders, payments and users into Bronze |
-| `gold_dbt_pipeline` | When Silver is updated | Builds and tests Gold |
+| `gold_dbt_pipeline` | When Silver is updated | Builds and tests Gold in `gold_next`, then publishes it to `gold` |
 | `bronze_maintenance` | Daily 04:00 | Archives after 90 days, compacts files, expires old snapshots, prunes the dead-letter table |
 | `housekeeping` | Daily 04:30 | Prunes old monitoring samples, audit rows and Airflow's own history |
 | `historical_backfill` | Sundays 02:00 | Replays 7 days through Silver, then rebuilds Gold |
@@ -552,7 +552,7 @@ Most failures recover by replaying data, because Kafka and Bronze keep it and th
 | Airflow scheduler stops | Batch jobs stop, but Kafka, Bronze and the speed path continue | `catchup=False` skips missed intervals, and the watermark means the next Silver run reads everything new |
 | FX rate API is down | `fx_rates_refresh` fails and retries 3 times | Silver keeps using the latest stored rate |
 | dbt source tests fail | Gold isn't rebuilt, so yesterday's tables stay in place | Fix Silver, then rerun the DAG |
-| dbt Gold tests fail | The next layer doesn't build, but the failing table stays visible to analysts, and the failure feed records it | Fix the model and rerun. This is a real weakness |
+| dbt Gold tests fail | Nothing is published: the build stays in `gold_next`, and readers keep the last good Gold. The failure feed records it, and the webhook alerts | Fix the model, inspect `gold_next`, and rerun |
 | ksqlDB restarts | Alerts pause | Queries resume from their Kafka offsets |
 | Serving sink crashes | Dashboards go stale | Docker restarts it and it replays from its last commit, with upserts removing repeats |
 | MinIO is down | Bronze, Silver and maintenance fail, but the speed path continues | Jobs recover through their checkpoint or watermark |
@@ -565,7 +565,7 @@ Most failures recover by replaying data, because Kafka and Bronze keep it and th
 - **Simulator state:** the stock ledger is held in memory, so stock levels reset when the generator restarts.
 - **Tied together:** the simulator writes to both Kafka and Postgres without a transaction, so they could briefly disagree.
 - **Heavy for one machine:** the full stack needs about 8 GB for Docker, so `COMPOSE_PROFILES` can run one layer at a time.
-- **Local credentials:** `.env.example` has development passwords. Postgres has separate superuser, application and read-only logins, but MinIO is used with its root account, Kafka has no authentication, and Superset's own metadata uses the superuser.
+- **Local credentials:** `.env.example` has development passwords. Postgres and MinIO give each service its own limited login, but Kafka has no authentication and Superset's own metadata uses the Postgres superuser.
 - **Simulated effects:** weather really is fetched, but its effect on demand is built into the simulator, so `agg_weather_demand` shows that the pipeline can measure an effect, not that rain changes real demand.
 - **Inventory source isn't independent:** the inventory REST pull reads this project's own API, which serves stock the simulator streamed, so it can't catch errors in the stream.
 
@@ -655,7 +655,11 @@ Try to answer each question aloud before reading the answer. If you can't, go ba
 | What would you change for production? | Separate databases, a replicated Kafka, managed object storage, lake-based Gold, and alerts on failures |
 | How would it handle far more data? | Add Kafka partitions and Spark workers, and move Gold off Postgres to a lake query engine |
 | How would you improve fraud detection? | Train a model on the API's features, using the simulator's `_is_fraud` labels, and compare its precision and recall with the rules' scores in `observability.fraud_evaluation` |
-| How would you stop bad Gold tables being seen? | Build to a staging schema, run the tests, then swap only if they pass |
+| How do you stop bad Gold tables being seen? | Write, audit, publish: dbt builds and tests in `gold_next`, and one transaction moves every table into `gold` only if all the tests passed |
+| Why copy Gold into `gold_next` first? | Incremental models build on their existing rows. At this size a copy is cheap; a large warehouse would use a zero-copy clone |
+| Why move tables, not rename the schema? | Renaming a schema needs CREATE on the whole database, which the application login deliberately doesn't have |
+| Who hears about a failure? | It's recorded for Grafana, and posted to a Slack or Mattermost webhook when `ALERT_WEBHOOK_URL` is set |
+| What can Spark do in MinIO? | Read, write and delete objects in the lakehouse and archive buckets. It can't create or delete buckets or manage users |
 | Why not Flink? | The brief allows either, and ksqlDB expresses these rules in SQL. Flink would suit more complex stateful logic |
 
 ## Learning it hands-on

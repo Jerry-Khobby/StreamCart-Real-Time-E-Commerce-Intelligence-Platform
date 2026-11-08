@@ -30,6 +30,7 @@ This is an honest checklist of StreamCart against common data engineering practi
 | Dead-letter table | Rejected rows are kept as JSON for inspection or replay | `lake.silver.rejected_rows` |
 | Tests on every model | Keys, accepted values, ranges and foreign keys | `batch/dbt/models/schema.yml` |
 | Tests before downstream use | `dbt build` stops the next layer when a test fails | `gold_dbt_pipeline` DAG |
+| Write, audit, publish | Gold is built and tested in `gold_next`, then swapped into `gold` in one transaction only if every test passes, so readers never see a failed table | `gold_dbt_pipeline` DAG, `V9__gold_build_schema.sql` |
 | Row count guard | The DAG fails if Gold is empty while Silver has orders | `gold_dbt_pipeline` DAG |
 | Uniqueness guard | The Silver job fails if a merge leaves duplicate keys | `consumer/lakehouse.py` |
 | Volume anomaly checks | A day with under half the usual rows raises one alert | `observability_monitor` DAG |
@@ -42,6 +43,7 @@ This is an honest checklist of StreamCart against common data engineering practi
 | --- | --- | --- |
 | Pipeline health dashboard | DAG success rates, row counts, freshness and quality results | Grafana |
 | Failure feed | Tasks that use up their retries are recorded and shown | `observability.pipeline_failures` |
+| Alerting | Failed tasks and volume drops are posted to a Slack or Mattermost webhook, when `ALERT_WEBHOOK_URL` is set | `batch/dags/common.py` |
 | Freshness checks | dbt warns if Silver stops updating, and the monitor samples every table | `sources.yml`, `observability_monitor` |
 | Schema change detection | Warehouse columns and Kafka contract versions are compared with their last saved state | `observability_monitor` |
 | Pipeline lag | Consumer lag and event latency are sampled per topic | `realtime.pipeline_lag` |
@@ -68,6 +70,7 @@ This is an honest checklist of StreamCart against common data engineering practi
 | Infrastructure as code | The whole stack, its dashboards and its schemas are in the repository | `docker-compose.yml`, `dashboards/`, `batch/db/migrations/` |
 | Pinned versions | Image tags, Python constraints and a dbt package lock | `Dockerfile`, `package-lock.yml` |
 | Secrets out of git | Settings come from an ignored `.env` file | `.env.example` |
+| Least privilege in MinIO | Spark and Airflow use a MinIO login that reaches only the lakehouse and archive buckets, and their containers never hold the root account | `storage/minio-init.sh` |
 | Least privilege in Postgres | Pipeline services use a login that can't create roles or databases, and dashboards and the API use a read-only one. The superuser is left to Postgres and the migrations | `V5__readonly_role.sql`, `V8__app_role.sql` |
 | Documentation | Architecture, operations, a project guide, and generated dbt docs | `docs/`, CI artifact |
 
@@ -75,10 +78,9 @@ This is an honest checklist of StreamCart against common data engineering practi
 
 | Practice | Current state | What a full version would add |
 | --- | --- | --- |
-| Blocking bad data from users | A failed test stops later layers, but the failing table itself stays visible | Build into a staging schema, then swap it in only if tests pass |
-| Alerting | Failures are recorded and shown on a dashboard, but nobody is notified | Send them to Slack, email or a paging service |
+| Alerting | Failures reach a chat webhook, but there's no on-call rota, paging or escalation | A paging service such as PagerDuty, with routing by severity |
 | Secrets management | `.env` is safe locally, but `.env.example` holds shared development passwords | A secrets manager, and unique passwords per environment |
-| Least privilege beyond Postgres | MinIO is reached with its root account, Kafka has no authentication, and Superset's own metadata database uses the Postgres superuser | A MinIO user limited to the two buckets, SASL and ACLs on Kafka, and a Superset login |
+| Least privilege everywhere | Kafka has no authentication, and Superset's own metadata database uses the Postgres superuser | SASL and ACLs on Kafka, and a Superset login |
 | Old secret in history | `airflow.cfg` was committed with a webserver `secret_key` before being removed. It isn't used now, but it stays in git history | Rewrite history if the key was ever reused |
 
 ## Deliberately not done
