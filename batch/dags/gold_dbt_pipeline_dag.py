@@ -5,19 +5,29 @@ Runs the dbt Gold layer whenever Silver is updated, by the hourly Silver job or 
 backfill. A fixed time could come before Silver had finished, and on a fresh install
 Gold would build from empty tables.
 
+Write, audit, publish: every table is built and tested in a separate schema,
+gold_next, and moved into gold only when everything has passed. Superset and analysts
+never see a table that failed its tests, and a failed run leaves yesterday's Gold intact.
+
 Execution order:
-  1. dbt deps       install packages, then load seeds (the regions reference table)
+  1. dbt deps       install packages
   2. source tests   validate the Silver tables before building on them
   3. freshness      warn if Silver has stopped updating
-  4. staging        views over Silver
-  5. dimensions     dim_*
-  6. facts          fct_*
-  7. aggregates     agg_*
-  8. log counts     fail if Gold is empty while Silver has data
+  4. prepare        empty gold_next and copy the current Gold tables into it, since
+                    incremental models build on their existing rows
+  5. seed           load the regions reference table
+  6. staging        views over Silver
+  7. dimensions     dim_*
+  8. facts          fct_*
+  9. aggregates     agg_*
+ 10. audit          row counts, and fail if Gold is empty while Silver has data
+ 11. publish        move every table and view into gold, in one transaction
 
 Each layer runs `dbt build`, which tests each model straight after building it. A
-failed test stops the next layer, so a bad dimension can't flow into facts and KPIs.
-The failing table itself stays visible until it's fixed.
+failed test stops every later task, including the publish.
+
+Copying Gold on each run is cheap at this size. A large warehouse would use a
+zero-copy clone or a table-format branch instead.
 
 Each layer is one dbt invocation. dbt already orders and parallelises models within
 it, and concurrent dbt processes would conflict over the shared target/ directory.
@@ -32,15 +42,54 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 from common import SILVER_DATASET, record_failure
 
 DBT_DIR = "/opt/airflow/dbt"
-DBT_CMD = f"cd {DBT_DIR} && dbt --no-use-colors"
+LIVE_SCHEMA = "gold"
+BUILD_SCHEMA = "gold_next"  # created by migration V9
+DBT_CMD = f"cd {DBT_DIR} && DBT_SCHEMA={BUILD_SCHEMA} dbt --no-use-colors"
 DBT_ARGS = f"--profiles-dir {DBT_DIR} --target dev"
 
 GOLD_TABLES = [
-    "gold.dim_customers", "gold.dim_products", "gold.dim_dates", "gold.dim_regions",
-    "gold.fct_orders", "gold.fct_sessions", "gold.fct_inventory_snapshots",
-    "gold.agg_daily_revenue", "gold.agg_fraud_summary", "gold.agg_inventory_health",
-    "gold.agg_funnel_conversion", "gold.agg_customer_retention",
+    "dim_customers", "dim_products", "dim_dates", "dim_regions",
+    "fct_orders", "fct_sessions", "fct_inventory_snapshots",
+    "agg_daily_revenue", "agg_fraud_summary", "agg_inventory_health",
+    "agg_funnel_conversion", "agg_customer_retention", "agg_weather_demand",
 ]
+
+
+def hook() -> PostgresHook:
+    return PostgresHook(postgres_conn_id="streamcart_postgres")
+
+
+def relations(pg: PostgresHook, schema: str) -> list[tuple[str, str]]:
+    """Tables and views in a schema, as (name, TABLE or VIEW)."""
+    return pg.get_records("""
+        SELECT c.relname, CASE c.relkind WHEN 'v' THEN 'VIEW' ELSE 'TABLE' END
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = %s AND c.relkind IN ('r', 'p', 'v')
+        ORDER BY c.relkind DESC, c.relname""", parameters=(schema,))
+
+
+def prepare_build_schema():
+    """Empty gold_next, then copy the live tables in, so incremental models continue from them."""
+    pg = hook()
+    statements = [f'DROP {kind} IF EXISTS {BUILD_SCHEMA}."{name}" CASCADE' for name, kind in relations(pg, BUILD_SCHEMA)]
+    for name, kind in relations(pg, LIVE_SCHEMA):
+        if kind == "TABLE":
+            statements.append(f'CREATE TABLE {BUILD_SCHEMA}."{name}" (LIKE {LIVE_SCHEMA}."{name}" INCLUDING ALL)')
+            statements.append(f'INSERT INTO {BUILD_SCHEMA}."{name}" SELECT * FROM {LIVE_SCHEMA}."{name}"')
+    pg.run(statements)  # one transaction
+    print(f"Prepared {BUILD_SCHEMA} with {sum(s.startswith('CREATE') for s in statements)} tables from {LIVE_SCHEMA}")
+
+
+def publish_gold():
+    """Swap every built table and view into gold in one transaction: readers see all or nothing."""
+    pg = hook()
+    built = relations(pg, BUILD_SCHEMA)
+    statements = ["SET LOCAL lock_timeout = '60s'"]
+    for name, kind in built:
+        statements.append(f'DROP {kind} IF EXISTS {LIVE_SCHEMA}."{name}"')
+        statements.append(f'ALTER {kind} {BUILD_SCHEMA}."{name}" SET SCHEMA {LIVE_SCHEMA}')
+    pg.run(statements)
+    print(f"Published {len(built)} tables and views to {LIVE_SCHEMA}")
 
 
 def build_layer(layer: str) -> BashOperator:
@@ -53,18 +102,18 @@ def build_layer(layer: str) -> BashOperator:
     )
 
 
-def log_gold_row_counts():
-    """Log row counts for all Gold tables. A missing table should fail the run."""
-    hook = PostgresHook(postgres_conn_id="streamcart_postgres")
+def audit_gold():
+    """Row counts for the built tables. A missing table, or an empty Gold over a full Silver, fails the run."""
+    pg = hook()
     for table in GOLD_TABLES:
-        count = hook.get_first(f"SELECT COUNT(*) FROM {table}")[0]
+        count = pg.get_first(f"SELECT COUNT(*) FROM {BUILD_SCHEMA}.{table}")[0]
         print(f"{table:<35} {count:>10,} rows")
 
     # dbt tests pass on an empty table, so check that Silver's orders actually arrived.
-    silver = hook.get_first("SELECT COUNT(*) FROM silver.transactions WHERE status <> 'failed'")[0]
-    gold = hook.get_first("SELECT COUNT(*) FROM gold.fct_orders")[0]
+    silver = pg.get_first("SELECT COUNT(*) FROM silver.transactions WHERE status <> 'failed'")[0]
+    gold = pg.get_first(f"SELECT COUNT(*) FROM {BUILD_SCHEMA}.fct_orders")[0]
     if silver and not gold:
-        raise ValueError(f"gold.fct_orders is empty but Silver has {silver:,} orders")
+        raise ValueError(f"fct_orders is empty but Silver has {silver:,} orders")
 
 
 with DAG(
@@ -86,6 +135,8 @@ with DAG(
 
     dbt_deps = BashOperator(task_id="dbt_deps", bash_command=f"{DBT_CMD} deps {DBT_ARGS}")
 
+    prepare = PythonOperator(task_id="prepare_build_schema", python_callable=prepare_build_schema)
+
     dbt_seed = BashOperator(task_id="dbt_seed", bash_command=f"{DBT_CMD} seed {DBT_ARGS}")
 
     dbt_source_test = BashOperator(
@@ -98,16 +149,21 @@ with DAG(
         bash_command=f"{DBT_CMD} source freshness {DBT_ARGS}",
     )
 
-    log_counts = PythonOperator(task_id="log_gold_counts", python_callable=log_gold_row_counts)
+    audit = PythonOperator(task_id="audit_gold", python_callable=audit_gold)
+
+    # One attempt: a retry after a partial failure would publish nothing new anyway.
+    publish = PythonOperator(task_id="publish_gold", python_callable=publish_gold, retries=0)
 
     (
         dbt_deps
-        >> dbt_seed
         >> dbt_source_test
         >> dbt_freshness
+        >> prepare
+        >> dbt_seed
         >> build_layer("staging")
         >> build_layer("dimensions")
         >> build_layer("facts")
         >> build_layer("aggregates")
-        >> log_counts
+        >> audit
+        >> publish
     )

@@ -55,7 +55,17 @@ def test_gold_runs_when_silver_is_updated(dagbag):
 
 def test_gold_runs_layers_in_dependency_order(dagbag):
     dag = dagbag.dags["gold_dbt_pipeline"]
-    order = ["dbt_deps", "dbt_seed", "dbt_source_test", "dbt_source_freshness", "dbt_build_staging", "dbt_build_dimensions",
-             "dbt_build_facts", "dbt_build_aggregates", "log_gold_counts"]
+    order = ["dbt_deps", "dbt_source_test", "dbt_source_freshness", "prepare_build_schema", "dbt_seed",
+             "dbt_build_staging", "dbt_build_dimensions", "dbt_build_facts", "dbt_build_aggregates",
+             "audit_gold", "publish_gold"]
     for upstream, downstream in zip(order, order[1:]):
         assert downstream in dag.get_task(upstream).downstream_task_ids
+
+
+def test_gold_builds_away_from_the_live_schema(dagbag):
+    """dbt writes to gold_next, so a failed test can never reach the tables readers use."""
+    dag = dagbag.dags["gold_dbt_pipeline"]
+    for task_id in ["dbt_seed", "dbt_build_staging", "dbt_build_facts", "dbt_build_aggregates"]:
+        assert "DBT_SCHEMA=gold_next" in dag.get_task(task_id).bash_command
+    # Publishing is the only task that touches gold, and it runs last
+    assert not dag.get_task("publish_gold").downstream_task_ids
