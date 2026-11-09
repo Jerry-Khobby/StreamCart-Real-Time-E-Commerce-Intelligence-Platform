@@ -68,15 +68,23 @@ def relations(pg: PostgresHook, schema: str) -> list[tuple[str, str]]:
         ORDER BY c.relkind DESC, c.relname""", parameters=(schema,))
 
 
-def prepare_build_schema():
-    """Empty gold_next, then copy the live tables in, so incremental models continue from them."""
-    pg = hook()
-    statements = [f'DROP {kind} IF EXISTS {BUILD_SCHEMA}."{name}" CASCADE' for name, kind in relations(pg, BUILD_SCHEMA)]
-    for name, kind in relations(pg, LIVE_SCHEMA):
+def prepare_statements(built: list[tuple[str, str]], live: list[tuple[str, str]]) -> list[str]:
+    """SQL that empties gold_next, then copies each live table into it. Views are rebuilt by dbt."""
+    statements = [f'DROP {kind} IF EXISTS {BUILD_SCHEMA}."{name}" CASCADE' for name, kind in built]
+    for name, kind in live:
         if kind == "TABLE":
             statements.append(f'CREATE TABLE {BUILD_SCHEMA}."{name}" (LIKE {LIVE_SCHEMA}."{name}" INCLUDING ALL)')
             statements.append(f'INSERT INTO {BUILD_SCHEMA}."{name}" SELECT * FROM {LIVE_SCHEMA}."{name}"')
-    pg.run(statements)  # one transaction
+    return statements
+
+
+def prepare_build_schema():
+    """Empty gold_next, then copy the live tables in, so incremental models continue from them."""
+    pg = hook()
+    statements = prepare_statements(relations(pg, BUILD_SCHEMA), relations(pg, LIVE_SCHEMA))
+    # On a fresh install both schemas are empty, and dbt builds everything from scratch
+    if statements:
+        pg.run(statements)  # one transaction
     print(f"Prepared {BUILD_SCHEMA} with {sum(s.startswith('CREATE') for s in statements)} tables from {LIVE_SCHEMA}")
 
 

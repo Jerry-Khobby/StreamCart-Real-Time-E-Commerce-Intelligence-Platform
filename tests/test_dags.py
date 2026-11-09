@@ -69,3 +69,17 @@ def test_gold_builds_away_from_the_live_schema(dagbag):
         assert "DBT_SCHEMA=gold_next" in dag.get_task(task_id).bash_command
     # Publishing is the only task that touches gold, and it runs last
     assert not dag.get_task("publish_gold").downstream_task_ids
+
+
+def test_gold_preparation_on_a_fresh_install_has_nothing_to_do(dagbag):
+    """Both schemas start empty, so there is no SQL to run and dbt builds from scratch."""
+    import gold_dbt_pipeline_dag as gold
+    assert gold.prepare_statements([], []) == []
+
+
+def test_gold_preparation_clears_the_last_build_and_copies_only_tables(dagbag):
+    import gold_dbt_pipeline_dag as gold
+    sql = gold.prepare_statements([("fct_orders", "TABLE")], [("fct_orders", "TABLE"), ("stg_transactions", "VIEW")])
+    assert sql[0] == 'DROP TABLE IF EXISTS gold_next."fct_orders" CASCADE'
+    assert any(s.startswith('CREATE TABLE gold_next."fct_orders"') for s in sql)
+    assert not any("stg_transactions" in s for s in sql)  # views are rebuilt by dbt
