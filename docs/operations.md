@@ -126,11 +126,25 @@ Gold now dates events in each market's local time. Incremental Gold tables built
 docker compose exec airflow-scheduler bash -c "cd /opt/airflow/dbt && dbt build --full-refresh"
 ```
 
+## Use Kafka from the command line
+
+The broker needs a login. The `kafka-init` container has the Kafka tools and the admin password, so run them there:
+
+```bash
+docker compose run --rm --entrypoint sh kafka-init -c 'printf "security.protocol=SASL_PLAINTEXT\nsasl.mechanism=PLAIN\nsasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username=\"admin\" password=\"$KAFKA_ADMIN_PASSWORD\";\n" > /tmp/admin.properties
+  kafka-acls --bootstrap-server kafka:9092 --command-config /tmp/admin.properties --list'
+```
+
+To give a new service access, add its user to the broker's `KAFKA_LISTENER_NAME_*_PLAIN_SASL_JAAS_CONFIG` and its ACLs to `streaming/kafka/init.sh`, then run `docker compose up -d`.
+
 ## Database logins
 
 | Login | `.env` setting | Used by |
 | --- | --- | --- |
+| Superset metadata | `SUPERSET_DB_USER` | Superset's own users, charts and dashboards |
 | MinIO lakehouse login | `MINIO_APP_USER` | Spark and Airflow. Limited to the two lakehouse buckets |
+| Kafka admin | `KAFKA_ADMIN_PASSWORD` | `kafka-init` only, which creates topics and ACLs |
+| Kafka service users | `KAFKA_*_PASSWORD` | One per service, limited by ACLs (see the architecture doc) |
 | MinIO root | `MINIO_ROOT_USER` | MinIO itself, `minio-init` and the console |
 | Superuser | `POSTGRES_USER` | Postgres and the migrations. Use it for admin work by hand |
 | Application | `POSTGRES_APP_USER` | Airflow, Spark, dbt, the simulator and the serving sink |
@@ -149,5 +163,6 @@ Migration V8 creates the application login and gives it the existing tables, so 
 | Gold tests pass but dashboards are empty | Silver hadn't run yet | Check `gold.fct_orders`, then rerun `gold_dbt_pipeline` |
 | Empty Superset charts | Gold hasn't been built yet | Run `silver_pipeline`, then `gold_dbt_pipeline` |
 | The Bronze job restarted with `schema ID ... which this job doesn't know yet` | A new contract version was registered | Nothing: it's expected once per new version, and the restart loads it |
+| A Kafka client logs `TOPIC_AUTHORIZATION_FAILED` or `GROUP_AUTHORIZATION_FAILED` | Its ACLs don't cover that topic or group | Add the grant to `streaming/kafka/init.sh` and run `docker compose up kafka-init` |
 | `permission denied` from a pipeline task | A table was created by hand as the superuser | `ALTER TABLE ... OWNER TO streamcart_app`, or create it in a migration |
 | A service won't start and `db-migrate` exited with an error | A migration failed | Check `docker compose logs db-migrate`, fix the newest migration, and run `docker compose up db-migrate` |

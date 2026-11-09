@@ -70,8 +70,9 @@ This is an honest checklist of StreamCart against common data engineering practi
 | Infrastructure as code | The whole stack, its dashboards and its schemas are in the repository | `docker-compose.yml`, `dashboards/`, `batch/db/migrations/` |
 | Pinned versions | Image tags, Python constraints and a dbt package lock | `Dockerfile`, `package-lock.yml` |
 | Secrets out of git | Settings come from an ignored `.env` file | `.env.example` |
+| Least privilege in Kafka | Every service logs in with its own SASL user, and ACLs allow each only the topics, groups and operations it uses. Anything not granted is refused | `streaming/kafka/init.sh` |
 | Least privilege in MinIO | Spark and Airflow use a MinIO login that reaches only the lakehouse and archive buckets, and their containers never hold the root account | `storage/minio-init.sh` |
-| Least privilege in Postgres | Pipeline services use a login that can't create roles or databases, and dashboards and the API use a read-only one. The superuser is left to Postgres and the migrations | `V5__readonly_role.sql`, `V8__app_role.sql` |
+| Least privilege in Postgres | Pipeline services use a login that can't create roles or databases, dashboards and the API use a read-only one, and Superset's metadata has its own login that owns only that database. The superuser is left to Postgres and the migrations | `V5__readonly_role.sql`, `V8__app_role.sql` |
 | Documentation | Architecture, operations, a project guide, and generated dbt docs | `docs/`, CI artifact |
 
 ## Partly in place
@@ -80,7 +81,7 @@ This is an honest checklist of StreamCart against common data engineering practi
 | --- | --- | --- |
 | Alerting | Failures reach a chat webhook, but there's no on-call rota, paging or escalation | A paging service such as PagerDuty, with routing by severity |
 | Secrets management | `.env` is safe locally, but `.env.example` holds shared development passwords | A secrets manager, and unique passwords per environment |
-| Least privilege everywhere | Kafka has no authentication, and Superset's own metadata database uses the Postgres superuser | SASL and ACLs on Kafka, and a Superset login |
+| Encryption in transit | Kafka logins and Postgres connections travel unencrypted inside the Docker network | TLS on Kafka (SASL_SSL), Postgres and MinIO |
 | Old secret in history | `airflow.cfg` was committed with a webserver `secret_key` before being removed. It isn't used now, but it stays in git history | Rewrite history if the key was ever reused |
 
 ## Deliberately not done

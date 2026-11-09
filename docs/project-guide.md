@@ -565,7 +565,7 @@ Most failures recover by replaying data, because Kafka and Bronze keep it and th
 - **Simulator state:** the stock ledger is held in memory, so stock levels reset when the generator restarts.
 - **Tied together:** the simulator writes to both Kafka and Postgres without a transaction, so they could briefly disagree.
 - **Heavy for one machine:** the full stack needs about 8 GB for Docker, so `COMPOSE_PROFILES` can run one layer at a time.
-- **Local credentials:** `.env.example` has development passwords. Postgres and MinIO give each service its own limited login, but Kafka has no authentication and Superset's own metadata uses the Postgres superuser.
+- **Local credentials:** `.env.example` has development passwords. Postgres, MinIO and Kafka give each service its own limited login, but nothing is encrypted in transit inside the Docker network.
 - **Simulated effects:** weather really is fetched, but its effect on demand is built into the simulator, so `agg_weather_demand` shows that the pipeline can measure an effect, not that rain changes real demand.
 - **Inventory source isn't independent:** the inventory REST pull reads this project's own API, which serves stock the simulator streamed, so it can't catch errors in the stream.
 
@@ -659,6 +659,7 @@ Try to answer each question aloud before reading the answer. If you can't, go ba
 | Why copy Gold into `gold_next` first? | Incremental models build on their existing rows. At this size a copy is cheap; a large warehouse would use a zero-copy clone |
 | Why move tables, not rename the schema? | Renaming a schema needs CREATE on the whole database, which the application login deliberately doesn't have |
 | Who hears about a failure? | It's recorded for Grafana, and posted to a Slack or Mattermost webhook when `ALERT_WEBHOOK_URL` is set |
+| How is Kafka secured? | Each service logs in with its own SASL user, and ACLs allow only what it uses: the simulator can write the source topics but not read them, Spark can read them but not write, and so on. Only `kafka-init` uses the admin login |
 | What can Spark do in MinIO? | Read, write and delete objects in the lakehouse and archive buckets. It can't create or delete buckets or manage users |
 | Why not Flink? | The brief allows either, and ksqlDB expresses these rules in SQL. Flink would suit more complex stateful logic |
 

@@ -76,6 +76,20 @@ Silver keeps UTC. Gold converts each event to its market's time zone, from the `
 
 dbt never builds in `gold`. The Gold DAG copies the live tables into `gold_next`, builds and tests every layer there, checks the row counts, and then moves every table and view into `gold` in one transaction. If any test fails, nothing moves: Superset keeps the last good Gold, and the failed build stays in `gold_next` for inspection. The tables are moved one by one rather than renaming the schema, because a schema rename needs CREATE on the whole database, which the application login doesn't have.
 
+### Every Kafka client has its own login
+
+The broker accepts only SASL logins, and denies anything that no ACL allows. `kafka-init` uses the admin login to create the topics and grant each service exactly what it needs:
+
+| User | Can |
+| --- | --- |
+| `streamcart_producer` (simulator) | Write the three source topics |
+| `streamcart_spark` (Bronze stream) | Read the three source topics |
+| `streamcart_sink` (serving sink) | Read orders, stock and the two alert topics |
+| `streamcart_ksql` (ksqlDB) | Read orders and stock, and own its output and internal topics |
+| `streamcart_registry` (Schema Registry) | Own the `_schemas` topic |
+
+The logins travel unencrypted inside the Docker network. A deployment across machines would add TLS.
+
 ### One MinIO login for the lakehouse
 
 `minio-init` creates a MinIO user whose policy reaches only the lakehouse and archive buckets, and only their objects. Spark and Airflow use it, and their containers have the root credentials blanked out. The root account is left for MinIO itself and its console.
@@ -87,6 +101,7 @@ dbt never builds in `gold`. The Gold DAG copies the live tables into `gold_next`
 | Superuser (`POSTGRES_USER`) | Postgres itself and Flyway migrations | Everything |
 | Application (`POSTGRES_APP_USER`) | Airflow, Spark, dbt, the simulator and the serving sink | Read and write the pipeline's schemas. It can't create roles or databases |
 | Read-only (`POSTGRES_READER_USER`) | Grafana, Superset's Gold connection and the REST API | Read only |
+| Superset (`SUPERSET_DB_USER`) | Superset's own metadata | Own the `superset` database, and nothing in the warehouse |
 
 ### Weather drives demand
 
