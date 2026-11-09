@@ -33,7 +33,7 @@ from typing import Optional
 from producer.config import (
     CURRENCIES, DAY_OF_WEEK_WEIGHTS, FRAUD_USER_POOL, FX_TO_USD, PAGE_FUNNEL_WEIGHTS, PRICE_RANGES,
     PRODUCT_CATEGORIES, PRODUCT_IDS, REGION_PARTITIONS, REGION_WEIGHTS, REGIONS, SEASONAL_WEIGHTS, USER_HOME_REGION,
-    USER_IDS, WAREHOUSES, WAREHOUSES_BY_REGION, _BOT_UAS, _HUMAN_UAS, _REFERRERS, _SEARCH_TERMS,
+    USER_IDS, WAREHOUSES, WAREHOUSES_BY_REGION, _BOT_UAS, _HUMAN_UAS, _REFERRERS, _SEARCH_TERMS, kafka_auth,
 )
 from producer.logging_config import setup_logging
 from quality.rules import WET_HOUR_MIN_PRECIPITATION_MM
@@ -436,6 +436,7 @@ class EventPublisher:
             "acks": "all",
             "enable.idempotence": True,
             "linger.ms": 50,
+            **kafka_auth(),
         })
         logger.info(f"Publishing Avro events to {KAFKA_BOOTSTRAP}")
 

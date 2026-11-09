@@ -170,3 +170,31 @@ _HUMAN_UAS = [
 LOG_DIR = os.getenv("LOG_DIR", "/opt/airflow/logs")
 LOG_FILE = os.getenv("LOG_FILE", "streamcart.log")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+
+def kafka_auth() -> dict:
+    """
+    Login settings for Kafka clients (librdkafka names). Each service has its own user,
+    set by KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD. Without them, plaintext, as in tests.
+    """
+    import os
+
+    user = os.getenv("KAFKA_SASL_USERNAME")
+    if not user:
+        return {}
+    return {
+        "security.protocol": "SASL_PLAINTEXT",
+        "sasl.mechanism": "PLAIN",
+        "sasl.username": user,
+        "sasl.password": os.environ["KAFKA_SASL_PASSWORD"],
+    }
+
+
+def spark_kafka_auth() -> dict:
+    """The same login, as options for Spark's Kafka source."""
+    auth = kafka_auth()
+    if not auth:
+        return {}
+    jaas = ('org.apache.kafka.common.security.plain.PlainLoginModule required '
+            f'username="{auth["sasl.username"]}" password="{auth["sasl.password"]}";')
+    return {"kafka.security.protocol": "SASL_PLAINTEXT", "kafka.sasl.mechanism": "PLAIN", "kafka.sasl.jaas.config": jaas}

@@ -26,6 +26,7 @@ from pyspark.sql.functions import (
 from pyspark.sql.types import StructType
 
 from consumer.lakehouse import CATALOG, bucket, create_spark_session
+from producer.config import spark_kafka_auth
 from producer.logging_config import setup_logging
 
 logger = setup_logging("spark_streaming")
@@ -85,6 +86,7 @@ def read_topic(spark, topic: str):
         # On first start, take everything Kafka still holds, including the seed data.
         .option("startingOffsets", "earliest")
         .option("failOnDataLoss", "false")
+        .options(**spark_kafka_auth())
         .load()
     )
     decoded = decode(raw, topic, writers, latest)
