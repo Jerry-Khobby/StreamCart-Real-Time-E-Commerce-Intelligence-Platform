@@ -51,6 +51,11 @@ x-airflow-env: &airflow-env
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_APP_USER:-streamcart_app}:${POSTGRES_APP_PASSWORD:-streamcart_app}@postgres:5432/${POSTGRES_DB}
     # Airflow connections used by the DAGs
     # The Spark hook builds --master from host:port, so the host carries the scheme.
+    # The lakehouse's own MinIO login (created by minio-init), not the root account.
+    MINIO_APP_USER: ${MINIO_APP_USER:-streamcart-lakehouse}
+    MINIO_APP_PASSWORD: ${MINIO_APP_PASSWORD:-streamcart-lakehouse-secret}
+    MINIO_ROOT_USER: ""
+    MINIO_ROOT_PASSWORD: ""
     AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type": "spark", "host": "spark://spark-master", "port": 7077}'
     AIRFLOW_CONN_STREAMCART_POSTGRES: postgres://${POSTGRES_APP_USER:-streamcart_app}:${POSTGRES_APP_PASSWORD:-streamcart_app}@postgres:5432/${POSTGRES_DB}
     # PostgreSQL
@@ -99,6 +104,8 @@ x-producer-common: &producer-common
   environment:
     USE_KAFKA: "true"
     KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    KAFKA_SASL_USERNAME: streamcart_producer
+    KAFKA_SASL_PASSWORD: ${KAFKA_PRODUCER_PASSWORD:-streamcart-producer}
     SCHEMA_REGISTRY_URL: http://schema-registry:8081
     POSTGRES_HOST: postgres
     POSTGRES_PORT: "5432"
@@ -168,13 +175,21 @@ services:
       FLYWAY_PLACEHOLDERS_READER_PASSWORD: ${POSTGRES_READER_PASSWORD}
       FLYWAY_PLACEHOLDERS_APP_USER: ${POSTGRES_APP_USER:-streamcart_app}
       FLYWAY_PLACEHOLDERS_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-streamcart_app}
+      FLYWAY_PLACEHOLDERS_SUPERSET_USER: ${SUPERSET_DB_USER:-streamcart_superset}
+      FLYWAY_PLACEHOLDERS_SUPERSET_PASSWORD: ${SUPERSET_DB_PASSWORD:-streamcart_superset}
       # Databases created before Flyway was added already have Airflow's tables.
       FLYWAY_BASELINE_ON_MIGRATE: "true"
       FLYWAY_BASELINE_VERSION: "0"
       FLYWAY_CONNECT_RETRIES: "60"
     volumes:
       - ./batch/db/migrations:/flyway/sql:ro
-    command: migrate
+      - ./batch/db/superset-migrations:/flyway/superset:ro
+    # The warehouse first (it creates Superset's login), then Superset's own database.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        flyway migrate &&
+        flyway -url=jdbc:postgresql://postgres:5432/superset -locations=filesystem:/flyway/superset migrate
     networks:
       - streamcart-net
     restart: "no"
@@ -207,6 +222,28 @@ services:
       - streamcart-net
     restart: unless-stopped
 
+  # ── MinIO login for the lakehouse ──────────────────────────────────────────
+  # Creates the user Spark and Airflow use, limited to the two lakehouse buckets.
+  minio-init:
+    image: bitnamilegacy/minio:2025.7.23
+    container_name: streamcart-minio-init
+    profiles: ["batch", "full"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      MINIO_APP_USER: ${MINIO_APP_USER:-streamcart-lakehouse}
+      MINIO_APP_PASSWORD: ${MINIO_APP_PASSWORD:-streamcart-lakehouse-secret}
+    volumes:
+      - ./storage/minio-init.sh:/minio-init.sh:ro
+    entrypoint: ["/bin/sh", "/minio-init.sh"]
+    networks:
+      - streamcart-net
+    restart: "no"
+
   # ── Zookeeper (Kafka coordination) ───────────────────────────────────────
   zookeeper:
     image: confluentinc/cp-zookeeper:7.7.7
@@ -237,9 +274,19 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9093
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9093
+      # Every client logs in (SASL/PLAIN) with its own user, and ACLs set by kafka-init
+      # limit each to the topics it uses. Anything not granted is denied.
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:SASL_PLAINTEXT,HOST:SASL_PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,HOST://0.0.0.0:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
+      KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG: &kafka-users 'org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="${KAFKA_ADMIN_PASSWORD:-streamcart-admin}" user_admin="${KAFKA_ADMIN_PASSWORD:-streamcart-admin}" user_streamcart_producer="${KAFKA_PRODUCER_PASSWORD:-streamcart-producer}" user_streamcart_spark="${KAFKA_SPARK_PASSWORD:-streamcart-spark}" user_streamcart_sink="${KAFKA_SINK_PASSWORD:-streamcart-sink}" user_streamcart_ksql="${KAFKA_KSQL_PASSWORD:-streamcart-ksql}" user_streamcart_registry="${KAFKA_REGISTRY_PASSWORD:-streamcart-registry}";'
+      KAFKA_LISTENER_NAME_HOST_PLAIN_SASL_JAAS_CONFIG: *kafka-users
+      KAFKA_AUTHORIZER_CLASS_NAME: kafka.security.authorizer.AclAuthorizer
+      KAFKA_SUPER_USERS: User:admin
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       # ksqlDB writes its command topic in transactions. The defaults need 3 brokers.
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
@@ -267,13 +314,11 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic transactions --partitions 5 --replication-factor 1;
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic clickstream --partitions 5 --replication-factor 1;
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic inventory_updates --partitions 5 --replication-factor 1;
-        echo 'Kafka topics ready.';
-      "
+    environment:
+      KAFKA_ADMIN_PASSWORD: ${KAFKA_ADMIN_PASSWORD:-streamcart-admin}
+    volumes:
+      - ./streaming/kafka/init.sh:/kafka-init.sh:ro
+    entrypoint: ["/bin/sh", "/kafka-init.sh"]
     networks:
       - streamcart-net
     restart: "no"
@@ -283,11 +328,14 @@ services:
     image: confluentinc/cp-schema-registry:7.7.7
     container_name: streamcart-schema-registry
     depends_on:
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
       SCHEMA_REGISTRY_HOST_NAME: schema-registry
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: SASL_PLAINTEXT://kafka:9092
+      SCHEMA_REGISTRY_KAFKASTORE_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      SCHEMA_REGISTRY_KAFKASTORE_SASL_MECHANISM: PLAIN
+      SCHEMA_REGISTRY_KAFKASTORE_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.plain.PlainLoginModule required username="streamcart_registry" password="${KAFKA_REGISTRY_PASSWORD:-streamcart-registry}";'
       SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
       SCHEMA_REGISTRY_HEAP_OPTS: "-Xms64m -Xmx192m"
     ports:
@@ -324,6 +372,8 @@ services:
     profiles: ["batch", "full"]
     depends_on:
       db-migrate:
+        condition: service_completed_successfully
+      minio-init:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -386,6 +436,8 @@ services:
     profiles: ["batch", "full"]
     environment:
       SPARK_DAEMON_MEMORY: 256m
+      MINIO_ROOT_USER: ""
+      MINIO_ROOT_PASSWORD: ""
     command: ["spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077 --webui-port 8080"]
     ports:
       - "${SPARK_UI_HOST_PORT:-8081}:8080"
@@ -408,6 +460,8 @@ services:
     environment:
       SPARK_WORKER_DIR: /tmp/spark-work
       SPARK_DAEMON_MEMORY: 256m
+      MINIO_ROOT_USER: ""
+      MINIO_ROOT_PASSWORD: ""
     command: ["spark-class org.apache.spark.deploy.worker.Worker --cores 3 --memory 2g --webui-port 8081 spark://spark-master:7077"]
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8081 || exit 1"]
@@ -426,8 +480,11 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
-      minio:
-        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      # It reads every schema version from the registry when it starts
+      schema-init:
+        condition: service_completed_successfully
     # Without spark.cores.max a streaming app takes every core and no batch job
     # can ever start ("Initial job has not accepted any resources").
     command:
@@ -442,10 +499,18 @@ services:
         --conf spark.sql.shuffle.partitions=2
         --conf spark.ui.enabled=false
         /opt/airflow/consumer/spark_streaming.py
-    # The Iceberg catalog in Postgres is reached with the application login.
+    # The Iceberg catalog in Postgres and the lakehouse in MinIO are reached with the
+    # application logins, never the superuser or root account.
     environment:
       POSTGRES_USER: ${POSTGRES_APP_USER:-streamcart_app}
       POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-streamcart_app}
+      MINIO_APP_USER: ${MINIO_APP_USER:-streamcart-lakehouse}
+      MINIO_APP_PASSWORD: ${MINIO_APP_PASSWORD:-streamcart-lakehouse-secret}
+      # .env holds the MinIO root login; blank it so this container never has it.
+      MINIO_ROOT_USER: ""
+      MINIO_ROOT_PASSWORD: ""
+      KAFKA_SASL_USERNAME: streamcart_spark
+      KAFKA_SASL_PASSWORD: ${KAFKA_SPARK_PASSWORD:-streamcart-spark}
     # Always restart: the checkpoint resumes exactly where the stream stopped.
     restart: unless-stopped
 
@@ -501,6 +566,9 @@ services:
         condition: service_healthy
     environment:
       KSQL_BOOTSTRAP_SERVERS: kafka:9092
+      KSQL_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      KSQL_SASL_MECHANISM: PLAIN
+      KSQL_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.plain.PlainLoginModule required username="streamcart_ksql" password="${KAFKA_KSQL_PASSWORD:-streamcart-ksql}";'
       KSQL_LISTENERS: http://0.0.0.0:8088
       KSQL_KSQL_SCHEMA_REGISTRY_URL: http://schema-registry:8081
       KSQL_KSQL_SERVICE_ID: streamcart_
@@ -556,6 +624,16 @@ services:
       - ./producer:/opt/airflow/producer:ro
       - ./quality:/opt/airflow/quality:ro
       - ./logs:/opt/airflow/logs
+    environment:
+      USE_KAFKA: "true"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_APP_USER:-streamcart_app}
+      POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:-streamcart_app}
+      KAFKA_SASL_USERNAME: streamcart_sink
+      KAFKA_SASL_PASSWORD: ${KAFKA_SINK_PASSWORD:-streamcart-sink}
     command: python -m consumer.realtime_sink
     restart: unless-stopped
 
@@ -627,6 +705,12 @@ services:
       postgres:
         condition: service_healthy
     env_file: .env
+    environment:
+      SUPERSET_DB_USER: ${SUPERSET_DB_USER:-streamcart_superset}
+      SUPERSET_DB_PASSWORD: ${SUPERSET_DB_PASSWORD:-streamcart_superset}
+      # .env holds the Postgres superuser; blank it so Superset never has it.
+      POSTGRES_USER: ""
+      POSTGRES_PASSWORD: ""
     command: ["/app/streamcart/init.sh"]
     networks:
       - streamcart-net
@@ -641,6 +725,11 @@ services:
         condition: service_completed_successfully
     env_file: .env
     environment:
+      SUPERSET_DB_USER: ${SUPERSET_DB_USER:-streamcart_superset}
+      SUPERSET_DB_PASSWORD: ${SUPERSET_DB_PASSWORD:-streamcart_superset}
+      # .env holds the Postgres superuser; blank it so Superset never has it.
+      POSTGRES_USER: ""
+      POSTGRES_PASSWORD: ""
       SERVER_WORKER_AMOUNT: "1"
       SERVER_THREADS_AMOUNT: "4"
     ports:

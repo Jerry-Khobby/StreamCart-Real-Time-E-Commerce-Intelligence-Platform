@@ -98,6 +98,7 @@ jobs:
           docker run --rm --network host -v "$PWD/batch/db/migrations:/flyway/sql:ro" \
             -e FLYWAY_URL=jdbc:postgresql://localhost:5432/streamcart_db -e FLYWAY_USER=streamcart -e FLYWAY_PASSWORD=streamcart \
             -e FLYWAY_PLACEHOLDERS_READER_USER=streamcart_reader -e FLYWAY_PLACEHOLDERS_READER_PASSWORD=streamcart_reader             -e FLYWAY_PLACEHOLDERS_APP_USER=streamcart_app -e FLYWAY_PLACEHOLDERS_APP_PASSWORD=streamcart_app \
+            -e FLYWAY_PLACEHOLDERS_SUPERSET_USER=streamcart_superset -e FLYWAY_PLACEHOLDERS_SUPERSET_PASSWORD=streamcart_superset \
             -e FLYWAY_BASELINE_ON_MIGRATE=true -e FLYWAY_BASELINE_VERSION=0 \
             flyway/flyway:10.20.1-alpine migrate
       # A second run must find nothing to do, as on every restart.
@@ -106,6 +107,7 @@ jobs:
           docker run --rm --network host -v "$PWD/batch/db/migrations:/flyway/sql:ro" \
             -e FLYWAY_URL=jdbc:postgresql://localhost:5432/streamcart_db -e FLYWAY_USER=streamcart -e FLYWAY_PASSWORD=streamcart \
             -e FLYWAY_PLACEHOLDERS_READER_USER=streamcart_reader -e FLYWAY_PLACEHOLDERS_READER_PASSWORD=streamcart_reader             -e FLYWAY_PLACEHOLDERS_APP_USER=streamcart_app -e FLYWAY_PLACEHOLDERS_APP_PASSWORD=streamcart_app \
+            -e FLYWAY_PLACEHOLDERS_SUPERSET_USER=streamcart_superset -e FLYWAY_PLACEHOLDERS_SUPERSET_PASSWORD=streamcart_superset \
             -e FLYWAY_BASELINE_ON_MIGRATE=true -e FLYWAY_BASELINE_VERSION=0 \
             flyway/flyway:10.20.1-alpine migrate
       - name: Install dbt packages

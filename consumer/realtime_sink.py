@@ -18,6 +18,7 @@ from confluent_kafka.schema_registry.avro import AvroDeserializer
 from confluent_kafka.serialization import MessageField, SerializationContext
 from psycopg2.extras import execute_batch
 
+from producer.config import kafka_auth
 from producer.logging_config import setup_logging
 from quality.rules import FUTURE_TOLERANCE_SECONDS, MAX_AMOUNT_USD, MAX_EVENT_AGE_SECONDS
 
@@ -176,6 +177,7 @@ def main():
         "auto.offset.reset": "earliest",
         "topic.metadata.refresh.interval.ms": 30000,
         "allow.auto.create.topics": False,
+        **kafka_auth(),
     })
     consumer.subscribe(TOPICS)
     conn = connect_postgres()

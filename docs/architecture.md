@@ -72,6 +72,28 @@ Silver lists its columns explicitly, so a new Bronze field reaches Silver and Go
 
 Silver keeps UTC. Gold converts each event to its market's time zone, from the `regions` seed, before taking the date and hour. Otherwise a Tokyo order placed at 1 a.m. on Tuesday would be counted on Monday, and about a third of Asia's orders would land on the wrong day.
 
+### Gold is published only after its tests pass
+
+dbt never builds in `gold`. The Gold DAG copies the live tables into `gold_next`, builds and tests every layer there, checks the row counts, and then moves every table and view into `gold` in one transaction. If any test fails, nothing moves: Superset keeps the last good Gold, and the failed build stays in `gold_next` for inspection. The tables are moved one by one rather than renaming the schema, because a schema rename needs CREATE on the whole database, which the application login doesn't have.
+
+### Every Kafka client has its own login
+
+The broker accepts only SASL logins, and denies anything that no ACL allows. `kafka-init` uses the admin login to create the topics and grant each service exactly what it needs:
+
+| User | Can |
+| --- | --- |
+| `streamcart_producer` (simulator) | Write the three source topics |
+| `streamcart_spark` (Bronze stream) | Read the three source topics |
+| `streamcart_sink` (serving sink) | Read orders, stock and the two alert topics |
+| `streamcart_ksql` (ksqlDB) | Read orders and stock, and own its output and internal topics |
+| `streamcart_registry` (Schema Registry) | Own the `_schemas` topic |
+
+The logins travel unencrypted inside the Docker network. A deployment across machines would add TLS.
+
+### One MinIO login for the lakehouse
+
+`minio-init` creates a MinIO user whose policy reaches only the lakehouse and archive buckets, and only their objects. Spark and Airflow use it, and their containers have the root credentials blanked out. The root account is left for MinIO itself and its console.
+
 ### Three database logins
 
 | Login | Used by | Can do |
@@ -79,6 +101,7 @@ Silver keeps UTC. Gold converts each event to its market's time zone, from the `
 | Superuser (`POSTGRES_USER`) | Postgres itself and Flyway migrations | Everything |
 | Application (`POSTGRES_APP_USER`) | Airflow, Spark, dbt, the simulator and the serving sink | Read and write the pipeline's schemas. It can't create roles or databases |
 | Read-only (`POSTGRES_READER_USER`) | Grafana, Superset's Gold connection and the REST API | Read only |
+| Superset (`SUPERSET_DB_USER`) | Superset's own metadata | Own the `superset` database, and nothing in the warehouse |
 
 ### Weather drives demand
 
@@ -124,7 +147,7 @@ One Postgres instance holds all of these, which keeps memory use practical on a 
 | `external_sources` | Hourly at :05 | Weather, and stock from the inventory API |
 | `observability_monitor` | Every 15 minutes | Row counts, freshness, schema changes, volume, fraud rule scores |
 | `oltp_daily_batch` | Daily 00:30 | Extract orders, payments and users to Bronze |
-| `gold_dbt_pipeline` | When Silver is updated | Build and test Gold |
+| `gold_dbt_pipeline` | When Silver is updated | Build and test Gold in `gold_next`, then publish it to `gold` |
 | `bronze_maintenance` | Daily 04:00 | Archive after 90 days, compact, expire snapshots, prune the dead-letter table |
 | `housekeeping` | Daily 04:30 | Prune monitoring samples, audit tables and Airflow's own history |
 | `historical_backfill` | Sundays 02:00 (paused on install) | Replay 7 days through Silver, then rebuild Gold |
