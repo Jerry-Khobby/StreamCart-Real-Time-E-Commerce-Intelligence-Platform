@@ -171,7 +171,7 @@ Each tool has one main job, and the simplest way to remember them is by that job
 | **Grafana** | An operational dashboard tool | Shows live operations and pipeline health | Suited to data that refreshes constantly |
 | **Apache Superset** | A business intelligence tool | Shows revenue, retention, funnel and top products | Suited to business analysis of historical data |
 | **FastAPI** | A Python web framework | Serves live inventory and fraud features over REST | Lets other software use the data |
-| **Docker Compose** | A multi-container runner | Starts all 22 services | One command runs the whole platform |
+| **Docker Compose** | A multi-container runner | Starts all 24 services | One command runs the whole platform |
 
 ## The pipeline, stage by stage
 
@@ -518,7 +518,7 @@ Read the files in this order, because it follows the data from source to dashboa
 | File | What it does |
 | --- | --- |
 | `Dockerfile` | Builds the shared image: Airflow, PySpark, connector jars, and dbt in its own virtualenv |
-| `docker-compose.yml` | Defines the 22 services and their start order |
+| `docker-compose.yml` | Defines the 24 services and their start order |
 | `wait-for-postgres-and-init.sh` | Prepares Airflow's database, admin user and Spark pool |
 | `.env.example` | Template for the local settings |
 | `dashboards/grafana/` | Grafana datasource and dashboard JSON |
