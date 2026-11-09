@@ -133,11 +133,11 @@
   <text x="976" y="432" class="s">plus FX and weather</text>
   <rect class="ba" x="962" y="470" width="162" height="50" rx="7"/>
   <text x="976" y="492" class="n">dbt</text>
-  <text x="976" y="509" class="s">models and tests</text>
+  <text x="976" y="509" class="s">tested in gold_next</text>
   <rect class="ba" x="962" y="542" width="162" height="84" rx="7"/>
   <text x="976" y="564" class="n">gold schema</text>
   <text x="976" y="583" class="s">4 dimensions, 3 facts</text>
-  <text x="976" y="600" class="s">5 KPI aggregates</text>
+  <text x="976" y="600" class="s">6 KPI aggregates</text>
 
   <!-- Superset -->
   <rect class="box" x="1190" y="548" width="170" height="72" rx="7"/>
@@ -184,10 +184,10 @@
   <text x="262" y="692" class="h">ORCHESTRATION: APACHE AIRFLOW</text>
   <g class="s">
     <text x="262" y="716" class="s"><tspan font-weight="700">Hourly:</tspan> silver_pipeline, fx_rates_refresh, external_sources</text>
-    <text x="262" y="738" class="s"><tspan font-weight="700">Daily:</tspan> oltp_daily_batch, gold_dbt_pipeline, bronze_maintenance</text>
-    <text x="262" y="760" class="s"><tspan font-weight="700">Weekly:</tspan> historical_backfill</text>
+    <text x="262" y="738" class="s"><tspan font-weight="700">Daily:</tspan> oltp_daily_batch, bronze_maintenance, housekeeping</text>
+    <text x="262" y="760" class="s"><tspan font-weight="700">When Silver updates:</tspan> gold_dbt_pipeline   <tspan font-weight="700">Weekly:</tspan> historical_backfill</text>
     <text x="800" y="716" class="s"><tspan font-weight="700">Every 15 minutes:</tspan> observability_monitor</text>
-    <text x="800" y="738" class="s">row counts, freshness, schema change detection</text>
+    <text x="800" y="738" class="s">row counts, freshness, schema changes, volume, fraud scores</text>
   </g>
   <path class="df" d="M360 668V510"/>
   <path class="df" d="M804 668V512"/>

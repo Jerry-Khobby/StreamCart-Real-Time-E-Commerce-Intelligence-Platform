@@ -125,7 +125,7 @@ docker compose up -d --build
 
 ### Hardware
 
-The full stack is 22 services. It settles at about 4.6 GB of container memory, and peaks at about 6 GB while Spark batch jobs run. Allocate at least 8 GB to Docker, and keep Docker's disk on an SSD if you can. A cold start took 20 to 40 minutes with Docker's disk on a USB hard drive, and should be much quicker on an SSD.
+The full stack is 24 services. It settles at about 4.6 GB of container memory, and peaks at about 6 GB while Spark batch jobs run. Allocate at least 8 GB to Docker, and keep Docker's disk on an SSD if you can. A cold start took 20 to 40 minutes with Docker's disk on a USB hard drive, and should be much quicker on an SSD.
 
 ### Running only part of it
 
@@ -163,16 +163,21 @@ Everything below was run against the live stack. The final code passed a clean i
 
 | Check | Result |
 | --- | --- |
-| Clean install with `docker compose up -d --build` | All 22 services start, exit code 0 |
-| Automated tests | 92 of 92 pass, and CI runs them on every push with lint, a dbt build on Postgres and image builds |
+| Clean install with `docker compose up -d --build` | All 24 services start, and every one-shot setup job exits 0: migrations, MinIO and Kafka logins, schemas, ksqlDB queries, Airflow and Superset |
+| Automated tests | 104 of 104 pass, and CI runs them on every push with lint, a dbt build on Postgres and image builds |
 | dbt | 15 models build, and all 112 tests pass, layer by layer from empty tables |
 | Silver on seeded history | 53,820 clickstream events in, 49,504 kept: bots and bad rows removed |
 | Quality gate | A tightened rule blocked the write, and the retry recovered those rows with no loss or duplicates |
 | Idempotency | After two full replays, row count equals distinct IDs in both Iceberg and Postgres, and in the dead-letter table |
 | Reproducible replays | A row that arrived on time 30 days ago is still accepted, and one that arrived 30 days late stays rejected |
-| Silver to Gold | 13,405 non-failed orders in Silver, 13,405 in `fct_orders`, on a fresh install |
+| Silver to Gold | 13,126 non-failed orders in Silver, 13,126 in `fct_orders`, on a fresh install |
+| Write, audit, publish | A deliberately failing dbt test stopped the build: nothing was published, and the live Gold kept its earlier timestamp. A passing build moved all 17 tables and views into `gold` |
+| Failure alerts | A real failed task reached a test webhook with its name, error and log link |
 | Dead-letter table | Rejected rows are kept as JSON in `lake.silver.rejected_rows` |
 | Read-only login | Grafana, Superset and the API can read, and writes are denied |
+| Kafka logins and ACLs | Every client logs in as its own user. The simulator was refused when reading a topic, Spark when reading the alert topics, and a client with no login got nothing |
+| MinIO login | Spark and Airflow's login could read and write lakehouse objects, and was refused when creating a bucket or listing users |
+| Superset login | Superset's metadata is owned by its own login, and no service connects as the Postgres superuser |
 | Application login | On a fresh install, Airflow's tables, the Iceberg catalog and every pipeline table were created by the non-superuser login, and it was refused when it tried to create a role |
 | Schema evolution | A second transactions schema version was registered mid-stream. Bronze stopped once, restarted, added the `promo_code` column, and Kafka offsets stayed contiguous with no duplicates |
 | Reconciliation | No orders missing from Silver across 7 complete seeded days |
